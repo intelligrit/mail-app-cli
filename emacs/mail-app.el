@@ -113,10 +113,13 @@ If nil, you will be prompted to select one when needed."
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "n") 'next-line)
     (define-key map (kbd "p") 'previous-line)
+    (define-key map (kbd "r") 'mail-app-reply-current-message)
+    (define-key map (kbd "R") 'mail-app-reply-all-current-message)
     (define-key map (kbd "f") 'mail-app-flag-current-message)
     (define-key map (kbd "d") 'mail-app-delete-current-message)
     (define-key map (kbd "a") 'mail-app-archive-current-message)
-    (define-key map (kbd "m") 'mail-app-mark-current-message)
+    (define-key map (kbd "t") 'mail-app-mark-current-message)
+    (define-key map (kbd "g") 'mail-app-refresh)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
     map)
@@ -393,8 +396,14 @@ If nil, you will be prompted to select one when needed."
                                          "-a" account "-m" mailbox))
          (inhibit-read-only t))
     (erase-buffer)
+    (insert (propertize (format "Mail.app Message: %s/%s\n" account mailbox) 'face 'bold))
+    (insert "\n")
+    (insert "Commands: [r] reply  [R] reply-all  [f] flag  [d] delete  [a] archive\n")
+    (insert "          [t] mark unread  [g] refresh  [q] quit  [?] help\n\n")
+    (insert (make-string 80 ?=) "\n\n")
     (insert output)
-    (goto-char (point-min))))
+    (goto-char (point-min))
+    (forward-line 6)))
 
 ;;; Interactive commands - Accounts
 
@@ -639,6 +648,22 @@ If nil, you will be prompted to select one when needed."
                            "-m" mail-app-current-mailbox
                            "--read" "false")
     (message "Message marked as unread")))
+
+(defun mail-app-reply-current-message ()
+  "Reply to current message."
+  (interactive)
+  (when mail-app-current-message-id
+    (let ((url (format "message://%3c%s%3e" mail-app-current-message-id)))
+      (browse-url url)
+      (message "Opening message in Mail.app to reply..."))))
+
+(defun mail-app-reply-all-current-message ()
+  "Reply to all on current message."
+  (interactive)
+  (when mail-app-current-message-id
+    (let ((url (format "message://%3c%s%3e" mail-app-current-message-id)))
+      (browse-url url)
+      (message "Opening message in Mail.app to reply all..."))))
 
 ;;; Marking and bulk operations
 
@@ -915,10 +940,14 @@ If nil, you will be prompted to select one when needed."
       "?" 'describe-mode)
 
     (evil-define-key 'normal mail-app-message-view-mode-map
+      "r" 'mail-app-reply-current-message
+      "R" 'mail-app-reply-all-current-message
       "f" 'mail-app-flag-current-message
       "d" 'mail-app-delete-current-message
       "a" 'mail-app-archive-current-message
-      "m" 'mail-app-mark-current-message
+      "t" 'mail-app-mark-current-message
+      "g" nil
+      "gr" 'mail-app-refresh
       "q" 'quit-window
       "ZZ" 'quit-window
       "ZQ" 'quit-window
