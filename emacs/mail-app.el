@@ -266,16 +266,26 @@ If nil, you will be prompted to select one when needed."
 
 ;;; Emacspeak integration
 
+(defun mail-app--speak (text &optional icon)
+  "Speak TEXT using Emacspeak.
+Optionally play audio ICON."
+  (when (featurep 'emacspeak)
+    (when icon
+      (emacspeak-icon icon))
+    (dtk-speak text)))
+
 (defun mail-app--emacspeak-speak-line ()
   "Custom Emacspeak line speaking for mail-app."
-  (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
+  (when (featurep 'emacspeak)
     (let ((speech-text (get-text-property (point) 'emacspeak-speak)))
       (when speech-text
         (dtk-speak speech-text)))))
 
 (defun mail-app--emacspeak-post-command ()
   "Emacspeak post-command hook for mail-app modes."
-  (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
+  (when (and (featurep 'emacspeak)
+             (memq this-command '(next-line previous-line evil-next-line evil-previous-line
+                                  mail-app-toggle-mark-at-point mail-app-unmark-at-point)))
     (mail-app--emacspeak-speak-line)))
 
 ;;; Display functions
@@ -477,9 +487,7 @@ If nil, you will be prompted to select one when needed."
 (defun mail-app-refresh ()
   "Refresh the current view."
   (interactive)
-  (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-    (dtk-speak "Refreshing")
-    (emacspeak-icon 'select-object))
+  (mail-app--speak "Refreshing" 'select-object)
   (cond
    ((eq major-mode 'mail-app-accounts-mode)
     (mail-app-list-accounts))
@@ -500,9 +508,7 @@ If nil, you will be prompted to select one when needed."
   (interactive
    (list (read-string "Account: " mail-app-default-account)
          (read-string "Mailbox: " "INBOX")))
-  (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-    (dtk-speak (format "Loading messages from %s" mailbox))
-    (emacspeak-icon 'select-object))
+  (mail-app--speak (format "Loading messages from %s" mailbox) 'select-object)
   (let* ((args (list "messages" "list" "-a" account "-m" mailbox
                      "-l" (number-to-string mail-app-message-limit)))
          (args (if mail-app-show-only-unread
@@ -526,9 +532,7 @@ If nil, you will be prompted to select one when needed."
                  (with-current-buffer buf
                    (setq mail-app-messages-data messages)
                    (mail-app--format-messages messages)
-                   (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-                     (dtk-speak (format "Loaded %d messages" (length messages)))
-                     (emacspeak-icon 'task-done))))))
+                   (mail-app--speak (format "Loaded %d messages" (length messages)) 'task-done)))))
            args)))
 
 (defun mail-app-view-message-at-point ()
@@ -573,15 +577,12 @@ If nil, you will be prompted to select one when needed."
       (let* ((id (plist-get message :id))
              (flagged (plist-get message :flagged))
              (new-state (not flagged)))
-        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-          (dtk-speak (if new-state "Flagging message" "Unflagging message"))
-          (emacspeak-icon 'select-object))
+        (mail-app--speak (if new-state "Flagging message" "Unflagging message") 'select-object)
         (mail-app--run-command "messages" "flag" id
                                "-a" mail-app-current-account
                                "-m" mail-app-current-mailbox
                                "--flagged" (if new-state "true" "false"))
-        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-          (emacspeak-icon 'task-done))
+        (mail-app--speak "Done" 'task-done)
         (mail-app-refresh)))))
 
 (defun mail-app-delete-message-at-point ()
@@ -591,15 +592,12 @@ If nil, you will be prompted to select one when needed."
     (if (not message)
         (message "No message at point")
       (when (yes-or-no-p "Delete this message? ")
-        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-          (dtk-speak "Deleting message")
-          (emacspeak-icon 'delete-object))
+        (mail-app--speak "Deleting message" 'delete-object)
         (let ((id (plist-get message :id)))
           (mail-app--run-command "messages" "delete" id
                                  "-a" mail-app-current-account
                                  "-m" mail-app-current-mailbox)
-          (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-            (emacspeak-icon 'task-done))
+          (mail-app--speak "Done" 'task-done)
           (mail-app-refresh))))))
 
 (defun mail-app-archive-message-at-point ()
@@ -608,15 +606,12 @@ If nil, you will be prompted to select one when needed."
   (let ((message (mail-app--get-message-at-point)))
     (if (not message)
         (message "No message at point")
-      (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-        (dtk-speak "Archiving message")
-        (emacspeak-icon 'select-object))
+      (mail-app--speak "Archiving message" 'select-object)
       (let ((id (plist-get message :id)))
         (mail-app--run-command "messages" "archive" id
                                "-a" mail-app-current-account
                                "-m" mail-app-current-mailbox)
-        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-          (emacspeak-icon 'task-done))
+        (mail-app--speak "Done" 'task-done)
         (mail-app-refresh)))))
 
 (defun mail-app-mark-message-at-point ()
@@ -628,15 +623,12 @@ If nil, you will be prompted to select one when needed."
       (let* ((id (plist-get message :id))
              (read (plist-get message :read))
              (new-state (not read)))
-        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-          (dtk-speak (format "Marking as %s" (if new-state "read" "unread")))
-          (emacspeak-icon 'select-object))
+        (mail-app--speak (format "Marking as %s" (if new-state "read" "unread")) 'select-object)
         (mail-app--run-command "messages" "mark" id
                                "-a" mail-app-current-account
                                "-m" mail-app-current-mailbox
                                "--read" (if new-state "true" "false"))
-        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-          (emacspeak-icon 'task-done))
+        (mail-app--speak "Done" 'task-done)
         (mail-app-refresh)))))
 
 (defun mail-app-flag-current-message ()
@@ -882,17 +874,13 @@ If nil, you will be prompted to select one when needed."
         (progn
           (setq mail-app-marked-messages (delete id mail-app-marked-messages))
           (mail-app--update-mark-indicator)
-          (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-            (dtk-speak "Unmarked")
-            (emacspeak-icon 'delete-object))
+          (mail-app--speak "Unmarked" 'delete-object)
           (forward-line 1))
       ;; Mark
       (progn
         (push id mail-app-marked-messages)
         (mail-app--update-mark-indicator)
-        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-          (dtk-speak "Marked")
-          (emacspeak-icon 'mark-object))
+        (mail-app--speak "Marked" 'mark-object)
         (forward-line 1)))))
 
 (defun mail-app-unmark-at-point ()
@@ -902,9 +890,7 @@ If nil, you will be prompted to select one when needed."
               (id (plist-get message :id)))
     (setq mail-app-marked-messages (delete id mail-app-marked-messages))
     (mail-app--update-mark-indicator)
-    (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-      (dtk-speak "Unmarked")
-      (emacspeak-icon 'delete-object))
+    (mail-app--speak "Unmarked" 'delete-object)
     (forward-line 1)))
 
 (defun mail-app-unmark-all ()
@@ -920,9 +906,7 @@ If nil, you will be prompted to select one when needed."
   (if (null mail-app-marked-messages)
       (message "No messages marked")
     (when (yes-or-no-p (format "Delete %d marked messages? " (length mail-app-marked-messages)))
-      (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-        (dtk-speak (format "Deleting %d messages" (length mail-app-marked-messages)))
-        (emacspeak-icon 'select-object))
+      (mail-app--speak (format "Deleting %d messages" (length mail-app-marked-messages)) 'select-object)
       (let ((count 0)
             (errors 0))
         (dolist (id mail-app-marked-messages)
@@ -936,10 +920,9 @@ If nil, you will be prompted to select one when needed."
              (setq errors (1+ errors))
              (message "Error deleting message %s: %s" id (error-message-string err)))))
         (setq mail-app-marked-messages nil)
-        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-          (dtk-speak (format "Deleted %d messages%s" count
-                             (if (> errors 0) (format ", %d errors" errors) "")))
-          (emacspeak-icon 'task-done))
+        (mail-app--speak (format "Deleted %d messages%s" count
+                                 (if (> errors 0) (format ", %d errors" errors) ""))
+                         'task-done)
         (mail-app-refresh)))))
 
 (defun mail-app-archive-marked ()
@@ -947,9 +930,7 @@ If nil, you will be prompted to select one when needed."
   (interactive)
   (if (null mail-app-marked-messages)
       (message "No messages marked")
-    (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-      (dtk-speak (format "Archiving %d messages" (length mail-app-marked-messages)))
-      (emacspeak-icon 'select-object))
+    (mail-app--speak (format "Archiving %d messages" (length mail-app-marked-messages)) 'select-object)
     (let ((count 0)
           (errors 0))
       (dolist (id mail-app-marked-messages)
@@ -963,10 +944,9 @@ If nil, you will be prompted to select one when needed."
            (setq errors (1+ errors))
            (message "Error archiving message %s: %s" id (error-message-string err)))))
       (setq mail-app-marked-messages nil)
-      (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-        (dtk-speak (format "Archived %d messages%s" count
-                           (if (> errors 0) (format ", %d errors" errors) "")))
-        (emacspeak-icon 'task-done))
+      (mail-app--speak (format "Archived %d messages%s" count
+                               (if (> errors 0) (format ", %d errors" errors) ""))
+                       'task-done)
       (mail-app-refresh))))
 
 (defun mail-app-flag-marked ()
@@ -974,9 +954,7 @@ If nil, you will be prompted to select one when needed."
   (interactive)
   (if (null mail-app-marked-messages)
       (message "No messages marked")
-    (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-      (dtk-speak (format "Flagging %d messages" (length mail-app-marked-messages)))
-      (emacspeak-icon 'select-object))
+    (mail-app--speak (format "Flagging %d messages" (length mail-app-marked-messages)) 'select-object)
     (let ((count 0)
           (errors 0))
       (dolist (id mail-app-marked-messages)
@@ -991,10 +969,9 @@ If nil, you will be prompted to select one when needed."
            (setq errors (1+ errors))
            (message "Error flagging message %s: %s" id (error-message-string err)))))
       (setq mail-app-marked-messages nil)
-      (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-        (dtk-speak (format "Flagged %d messages%s" count
-                           (if (> errors 0) (format ", %d errors" errors) "")))
-        (emacspeak-icon 'task-done))
+      (mail-app--speak (format "Flagged %d messages%s" count
+                               (if (> errors 0) (format ", %d errors" errors) ""))
+                       'task-done)
       (mail-app-refresh))))
 
 (defun mail-app-mark-marked-as-read ()
@@ -1002,9 +979,7 @@ If nil, you will be prompted to select one when needed."
   (interactive)
   (if (null mail-app-marked-messages)
       (message "No messages marked")
-    (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-      (dtk-speak (format "Marking %d messages as read" (length mail-app-marked-messages)))
-      (emacspeak-icon 'select-object))
+    (mail-app--speak (format "Marking %d messages as read" (length mail-app-marked-messages)) 'select-object)
     (let ((count 0)
           (errors 0))
       (dolist (id mail-app-marked-messages)
@@ -1019,10 +994,9 @@ If nil, you will be prompted to select one when needed."
            (setq errors (1+ errors))
            (message "Error marking message %s: %s" id (error-message-string err)))))
       (setq mail-app-marked-messages nil)
-      (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-        (dtk-speak (format "Marked %d messages as read%s" count
-                           (if (> errors 0) (format ", %d errors" errors) "")))
-        (emacspeak-icon 'task-done))
+      (mail-app--speak (format "Marked %d messages as read%s" count
+                               (if (> errors 0) (format ", %d errors" errors) ""))
+                       'task-done)
       (mail-app-refresh))))
 
 (defun mail-app-mark-marked-as-unread ()
@@ -1030,9 +1004,7 @@ If nil, you will be prompted to select one when needed."
   (interactive)
   (if (null mail-app-marked-messages)
       (message "No messages marked")
-    (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-      (dtk-speak (format "Marking %d messages as unread" (length mail-app-marked-messages)))
-      (emacspeak-icon 'select-object))
+    (mail-app--speak (format "Marking %d messages as unread" (length mail-app-marked-messages)) 'select-object)
     (let ((count 0)
           (errors 0))
       (dolist (id mail-app-marked-messages)
@@ -1047,10 +1019,9 @@ If nil, you will be prompted to select one when needed."
            (setq errors (1+ errors))
            (message "Error marking message %s: %s" id (error-message-string err)))))
       (setq mail-app-marked-messages nil)
-      (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-        (dtk-speak (format "Marked %d messages as unread%s" count
-                           (if (> errors 0) (format ", %d errors" errors) "")))
-        (emacspeak-icon 'task-done))
+      (mail-app--speak (format "Marked %d messages as unread%s" count
+                               (if (> errors 0) (format ", %d errors" errors) ""))
+                       'task-done)
       (mail-app-refresh))))
 
 ;;; Search
@@ -1059,15 +1030,27 @@ If nil, you will be prompted to select one when needed."
 (defun mail-app-search (query)
   "Search for messages matching QUERY."
   (interactive "sSearch query: ")
-  (let* ((output (mail-app--run-command "search" query
-                                         "-l" (number-to-string mail-app-message-limit)))
-         (messages (mail-app--parse-messages-output output))
-         (buf (get-buffer-create (format "*Mail.app Search: %s*" query))))
+  (mail-app--speak (format "Searching for %s" query) 'select-object)
+  (let ((buf (get-buffer-create (format "*Mail.app Search: %s*" query))))
+    ;; Setup buffer immediately with loading message
     (with-current-buffer buf
       (mail-app-messages-mode)
-      (setq mail-app-messages-data messages)
-      (mail-app--format-messages messages))
-    (switch-to-buffer buf)))
+      (setq mail-app-current-account "Search Results")
+      (setq mail-app-current-mailbox query)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Searching...\n")))
+    (switch-to-buffer buf)
+    ;; Search asynchronously
+    (mail-app--run-command-async
+     (lambda (output)
+       (let ((messages (mail-app--parse-messages-output output)))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq mail-app-messages-data messages)
+             (mail-app--format-messages messages)
+             (mail-app--speak (format "Found %d messages" (length messages)) 'task-done)))))
+     "search" query "-l" (number-to-string mail-app-message-limit))))
 
 ;;; Major modes
 
