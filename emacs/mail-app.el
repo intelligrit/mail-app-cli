@@ -125,6 +125,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "r") 'mail-app-reply-current-message)
     (define-key map (kbd "R") 'mail-app-reply-all-current-message)
     (define-key map (kbd "v") 'mail-app-cycle-view)
+    (define-key map (kbd "V") 'mail-app-cycle-view-reverse)
     (define-key map (kbd "f") 'mail-app-flag-current-message)
     (define-key map (kbd "d") 'mail-app-delete-current-message)
     (define-key map (kbd "a") 'mail-app-archive-current-message)
@@ -514,8 +515,8 @@ Optionally play audio ICON."
                                 (symbol-name view-mode) account mailbox)
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [r] reply  [R] reply-all  [v] cycle view  [c] compose\n")
-    (insert "          [f] flag  [d] delete  [a] archive  [t] unread\n")
+    (insert "Commands: [r] reply  [R] reply-all  [v] cycle view  [V] cycle reverse\n")
+    (insert "          [f] flag  [d] delete  [a] archive  [t] unread  [c] compose\n")
     (insert "          [g] refresh  [q] quit  [?] help\n\n")
     (insert (make-string 80 ?=) "\n\n")
     (cond
@@ -536,7 +537,7 @@ Optionally play audio ICON."
           (insert (propertize "Attachments\n\n" 'face 'bold))
           (insert "Commands: [RET/s] save  [q] quit\n\n")
           (insert (format "%-40s %-12s %-30s\n" "NAME" "SIZE" "TYPE"))
-          (insert (make-string 85 ?-) "\n")
+          (insert (make-string 80 ?-) "\n")
           (dolist (attachment attachments)
             (let* ((name (plist-get attachment :name))
                    (size (plist-get attachment :size))
@@ -726,7 +727,25 @@ Optionally play audio ICON."
     (switch-to-buffer buf)))
 
 (defun mail-app-cycle-view ()
-  "Cycle through message view modes: plain, full, attachments."
+  "Cycle through message view modes: plain, attachments, full."
+  (interactive)
+  (unless mail-app-current-message-id
+    (error "No message loaded"))
+  (let* ((current (or mail-app-current-view-mode 'plain))
+         (next (cond
+                ((eq current 'plain) 'attachments)
+                ((eq current 'attachments) 'full)
+                ((eq current 'full) 'plain)
+                (t 'plain))))
+    (setq mail-app-current-view-mode next)
+    (mail-app--speak (format "Switching to %s view" (symbol-name next)) 'select-object)
+    (mail-app--format-message-view mail-app-current-message-id
+                                    mail-app-current-account
+                                    mail-app-current-mailbox)
+    (mail-app--speak (format "%s view loaded" (symbol-name next)) 'task-done)))
+
+(defun mail-app-cycle-view-reverse ()
+  "Cycle through message view modes in reverse: plain, full, attachments."
   (interactive)
   (unless mail-app-current-message-id
     (error "No message loaded"))
@@ -882,14 +901,24 @@ Optionally play audio ICON."
   (let ((attachment (mail-app--get-attachment-at-point)))
     (if (not attachment)
         (message "No attachment at point")
+      (unless mail-app-current-message-id
+        (error "No message context available"))
+      (unless mail-app-current-account
+        (error "No account context available"))
+      (unless mail-app-current-mailbox
+        (error "No mailbox context available"))
       (let* ((name (plist-get attachment :name))
-             (downloads-path (expand-file-name name "~/Downloads"))
-             (output-path (read-file-name "Save attachment to: " "~/Downloads/" nil nil name)))
-        (mail-app--speak (format "Saving %s" name) 'task-done)
+             (output-path (expand-file-name
+                          (read-file-name "Save attachment to: " "~/Downloads/" nil nil name))))
+        (mail-app--speak (format "Saving %s" name) 'select-object)
         (mail-app--run-command-async
          (lambda (output)
-           (message "Saved attachment to: %s" output-path)
-           (mail-app--speak (format "Saved %s" name) 'task-done))
+           (if (string-match-p "error\\|Error\\|failed" output)
+               (progn
+                 (message "Failed to save attachment: %s" output)
+                 (mail-app--speak "Save failed" 'warn-user))
+             (message "Saved attachment to: %s" output-path)
+             (mail-app--speak (format "Saved %s" name) 'task-done)))
          "attachments" "save" mail-app-current-message-id name
          "-a" mail-app-current-account
          "-m" mail-app-current-mailbox
@@ -1424,6 +1453,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       "r" 'mail-app-reply-current-message
       "R" 'mail-app-reply-all-current-message
       "v" 'mail-app-cycle-view
+      "V" 'mail-app-cycle-view-reverse
       "c" 'mail-app-compose
       "f" 'mail-app-flag-current-message
       "d" 'mail-app-delete-current-message
