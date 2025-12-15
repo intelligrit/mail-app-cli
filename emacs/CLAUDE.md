@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # mail-app-wrap Development Guide
 
 ## Project Overview
@@ -31,10 +35,11 @@ mail-app-wrap is an Emacs interface to mail-app-cli, providing a full-featured m
    - `mail-app-current-message-id`: Currently viewed message ID
    - Used for context when performing actions
 
-5. **Three Major Modes**
-   - `mail-app-mailboxes-mode`: View all mailboxes (Level 1)
-   - `mail-app-messages-mode`: View messages in a mailbox (Level 2)
-   - `mail-app-message-view-mode`: View full message (Level 3)
+5. **Four Major Modes**
+   - `mail-app-accounts-mode`: View all accounts (Level 1)
+   - `mail-app-mailboxes-mode`: View mailboxes for account (Level 2)
+   - `mail-app-messages-mode`: View messages in a mailbox (Level 3)
+   - `mail-app-message-view-mode`: View full message (Level 4)
 
 6. **Emacspeak Integration**
    - Post-command hook for custom line speaking
@@ -107,11 +112,34 @@ Each displayed line has two key properties:
 ```bash
 # Verify CLI works
 mail-app-cli accounts list
-mail-app-cli mailboxes list
+mail-app-cli mailboxes list -a "Gmail"
 mail-app-cli messages list -a "Gmail" -m "INBOX" -l 10
 
 # Test search
-mail-app-cli search "test query"
+mail-app-cli search "test query" -a "Gmail" -m "INBOX"
+
+# Test attachments
+mail-app-cli attachments list MESSAGE_ID -a "Gmail" -m "INBOX"
+mail-app-cli attachments save MESSAGE_ID "filename.pdf" -a "Gmail" -m "INBOX"
+```
+
+### CLI Command Structure
+
+IMPORTANT: All mail-app-cli commands follow this pattern:
+```
+mail-app-cli <noun> <verb> [args...] [flags...]
+```
+
+Examples:
+- `mail-app-cli accounts list`
+- `mail-app-cli mailboxes list -a "Gmail"`
+- `mail-app-cli messages list -a "Gmail" -m "INBOX"`
+- `mail-app-cli attachments list MESSAGE_ID -a "Gmail" -m "INBOX"`
+- `mail-app-cli search "query" -a "Gmail"`
+
+When calling from Emacs, the arguments are passed as a list:
+```elisp
+(mail-app--run-command "attachments" "list" message-id "-a" account "-m" mailbox)
 ```
 
 ## Known Constraints
@@ -216,18 +244,33 @@ When making changes, verify:
 - [ ] Error handling shows useful messages
 - [ ] Confirmation prompts work for destructive actions
 
-## Future Enhancements
+## Current Features
+
+Implemented functionality:
+- ✅ 4-level navigation (accounts → mailboxes → messages → message view)
+- ✅ Marking and bulk operations (delete, archive, flag, mark as read/unread)
+- ✅ Message composition via Emacs compose-mail
+- ✅ Reply and reply-all functionality
+- ✅ Sending via mail-app-cli
+- ✅ Pagination with offset/limit
+- ✅ Contextual search (current account/mailbox) and global search
+- ✅ View cycling (plain text → full headers → attachments)
+- ✅ Async operations (non-blocking UI)
+- ✅ Full Emacspeak integration
+- ✅ Evil mode keybindings
+
+## Known Issues and Future Enhancements
+
+Current bugs to fix:
+- [ ] Attachments view not working properly (view cycling to attachments mode)
 
 Potential improvements (not currently implemented):
-
 - JSON output mode for more reliable parsing
-- Attachment handling (list, save)
-- Compose/send new messages
-- Reply/forward
+- Attachment save functionality in Emacs
 - Message threading
 - Multiple mailbox selection
-- Batch operations
 - Persistent filters/sorting
 - Draft management
 - Account-specific colors/faces
 - Integration with org-mode (capture emails as TODOs)
+- Configurable keybindings

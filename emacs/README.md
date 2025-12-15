@@ -125,12 +125,27 @@ From the message view:
 |-----|---------|-------------|
 | `n` | `next-line` | Scroll down |
 | `p` | `previous-line` | Scroll up |
+| `v` | `mail-app-cycle-view` | Cycle view modes (plain → full → attachments) |
 | `f` | `mail-app-flag-current-message` | Flag current message |
 | `d` | `mail-app-delete-current-message` | Delete current message (with confirmation) |
 | `a` | `mail-app-archive-current-message` | Archive current message |
-| `m` | `mail-app-mark-current-message` | Mark current message as unread |
+| `t` | `mail-app-mark-current-message` | Mark current message as unread |
+| `r` | `mail-app-reply-current-message` | Reply to current message |
+| `R` | `mail-app-reply-all-current-message` | Reply all to current message |
+| `s` / `RET` | `mail-app-save-attachment-at-point` | Save attachment at point (in attachments view) |
+| `c` | `mail-app-compose` | Compose new message |
+| `g` | `mail-app-refresh` | Refresh current view |
 | `q` | `quit-window` | Quit window |
 | `?` | `describe-mode` | Show help |
+
+#### View Modes
+
+When viewing a message, press `v` to cycle through:
+- **Plain view**: Message content only
+- **Full view**: Complete message with all headers
+- **Attachments view**: List of attachments (if any)
+
+In attachments view, navigate to an attachment and press `RET` or `s` to save it. You'll be prompted for a location (defaults to ~/Downloads).
 
 ### Evil Mode Keybindings
 

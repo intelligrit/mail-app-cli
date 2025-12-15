@@ -129,6 +129,8 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "d") 'mail-app-delete-current-message)
     (define-key map (kbd "a") 'mail-app-archive-current-message)
     (define-key map (kbd "t") 'mail-app-mark-current-message)
+    (define-key map (kbd "s") 'mail-app-save-attachment-at-point)
+    (define-key map (kbd "RET") 'mail-app-save-attachment-at-point)
     (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "g") 'mail-app-refresh)
     (define-key map (kbd "q") 'quit-window)
@@ -301,6 +303,29 @@ If nil, you will be prompted to select one when needed."
 (defun mail-app--get-message-at-point ()
   "Get the message data at point."
   (get-text-property (point) 'mail-app-message-data))
+
+(defun mail-app--get-attachment-at-point ()
+  "Get the attachment data at point."
+  (get-text-property (point) 'mail-app-attachment-data))
+
+(defun mail-app--parse-attachments-output (output)
+  "Parse attachments list OUTPUT into a list of plists."
+  (let ((lines (split-string output "\n" t))
+        (attachments '()))
+    ;; Skip header and separator lines
+    (setq lines (cddr lines))
+    ;; Parse each line - split on 3+ spaces which act as column separators
+    (dolist (line lines)
+      (let ((fields (split-string line "\\s-\\s-\\s-+" t)))
+        (when (>= (length fields) 3)
+          (let* ((name (string-trim (nth 0 fields)))
+                 (size (string-to-number (string-trim (nth 1 fields))))
+                 (mime-type (string-trim (nth 2 fields))))
+            (push (list :name name
+                        :size size
+                        :mime-type mime-type)
+                  attachments)))))
+    (nreverse attachments)))
 
 ;;; Emacspeak integration
 
@@ -503,9 +528,24 @@ Optionally play audio ICON."
       (insert output))
      ((eq view-mode 'attachments)
       ;; Show attachment list
-      (let ((attach-output (mail-app--run-command "attachments" "list" message-id
-                                                   "-a" account "-m" mailbox)))
-        (insert attach-output))))
+      (let* ((attach-output (mail-app--run-command "attachments" "list" message-id
+                                                    "-a" account "-m" mailbox))
+             (attachments (mail-app--parse-attachments-output attach-output)))
+        (if (null attachments)
+            (insert "No attachments found.\n")
+          (insert (propertize "Attachments\n\n" 'face 'bold))
+          (insert "Commands: [RET/s] save  [q] quit\n\n")
+          (insert (format "%-40s %-12s %-30s\n" "NAME" "SIZE" "TYPE"))
+          (insert (make-string 85 ?-) "\n")
+          (dolist (attachment attachments)
+            (let* ((name (plist-get attachment :name))
+                   (size (plist-get attachment :size))
+                   (mime-type (plist-get attachment :mime-type))
+                   (line (format "%-40s %-12d %-30s\n" name size mime-type))
+                   (speech-text (format "%s, %d bytes, %s" name size mime-type)))
+              (insert (propertize line
+                                  'mail-app-attachment-data attachment
+                                  'emacspeak-speak speech-text))))))))
     (goto-char (point-min))
     (forward-line 7)))
 
@@ -835,6 +875,25 @@ Optionally play audio ICON."
                            "-m" mail-app-current-mailbox
                            "--read" "false")
     (message "Message marked as unread")))
+
+(defun mail-app-save-attachment-at-point ()
+  "Save attachment at point to Downloads folder."
+  (interactive)
+  (let ((attachment (mail-app--get-attachment-at-point)))
+    (if (not attachment)
+        (message "No attachment at point")
+      (let* ((name (plist-get attachment :name))
+             (downloads-path (expand-file-name name "~/Downloads"))
+             (output-path (read-file-name "Save attachment to: " "~/Downloads/" nil nil name)))
+        (mail-app--speak (format "Saving %s" name) 'task-done)
+        (mail-app--run-command-async
+         (lambda (output)
+           (message "Saved attachment to: %s" output-path)
+           (mail-app--speak (format "Saved %s" name) 'task-done))
+         "attachments" "save" mail-app-current-message-id name
+         "-a" mail-app-current-account
+         "-m" mail-app-current-mailbox
+         "-o" output-path)))))
 
 (defun mail-app--parse-message-headers (output)
   "Parse message headers from OUTPUT and return plist."
@@ -1361,6 +1420,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       "?" 'describe-mode)
 
     (evil-define-key 'normal mail-app-message-view-mode-map
+      (kbd "RET") 'mail-app-save-attachment-at-point
       "r" 'mail-app-reply-current-message
       "R" 'mail-app-reply-all-current-message
       "v" 'mail-app-cycle-view
@@ -1369,6 +1429,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       "d" 'mail-app-delete-current-message
       "a" 'mail-app-archive-current-message
       "t" 'mail-app-mark-current-message
+      "s" 'mail-app-save-attachment-at-point
       "g" nil
       "gr" 'mail-app-refresh
       "q" 'quit-window
