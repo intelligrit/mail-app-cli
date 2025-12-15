@@ -100,6 +100,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "t") 'mail-app-mark-message-at-point)
     (define-key map (kbd "u") 'mail-app-show-unread)
     (define-key map (kbd "c") 'mail-app-compose)
+    (define-key map (kbd "N") 'mail-app-load-more-messages)
     ;; Marking for bulk operations
     (define-key map (kbd "m") 'mail-app-toggle-mark-at-point)
     (define-key map (kbd "M") 'mail-app-unmark-at-point)
@@ -156,6 +157,9 @@ If nil, you will be prompted to select one when needed."
 
 (defvar-local mail-app-marked-messages nil
   "List of marked message IDs for bulk operations.")
+
+(defvar-local mail-app-current-offset 0
+  "Current pagination offset for messages.")
 
 ;;; Utility functions
 
@@ -371,7 +375,7 @@ Optionally play audio ICON."
                         'face 'bold))
     (insert "\n")
     (insert "Commands: [RET] read  [c] compose  [f] flag  [d] delete  [a] archive  [t] toggle read/unread\n")
-    (insert "          [s] search  [u] unread filter  [g/r] refresh  [q] quit  [?] help\n")
+    (insert "          [s] search  [u] unread filter  [N] load more  [g/r] refresh  [q] quit  [?] help\n")
     (insert "Marking:  [m] mark  [M] unmark  [U] unmark-all  [x] delete marked\n")
     (insert "          [,a] archive marked  [,f] flag marked  [,r] read  [,u] unread\n\n")
     (insert (format "%-2s %-4s %-35s %-58s %-30s\n"
@@ -510,7 +514,8 @@ Optionally play audio ICON."
          (read-string "Mailbox: " "INBOX")))
   (mail-app--speak (format "Loading messages from %s" mailbox) 'select-object)
   (let* ((args (list "messages" "list" "-a" account "-m" mailbox
-                     "-l" (number-to-string mail-app-message-limit)))
+                     "-l" (number-to-string mail-app-message-limit)
+                     "-o" "0"))
          (args (if mail-app-show-only-unread
                    (append args '("-u"))
                  args))
@@ -520,6 +525,7 @@ Optionally play audio ICON."
       (mail-app-messages-mode)
       (setq mail-app-current-account account)
       (setq mail-app-current-mailbox mailbox)
+      (setq mail-app-current-offset 0)
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert "Loading messages...\n")))
@@ -534,6 +540,38 @@ Optionally play audio ICON."
                    (mail-app--format-messages messages)
                    (mail-app--speak (format "Loaded %d messages" (length messages)) 'task-done)))))
            args)))
+
+(defun mail-app-load-more-messages ()
+  "Load next page of messages and append to current list."
+  (interactive)
+  (unless (and mail-app-current-account mail-app-current-mailbox)
+    (error "No mailbox context"))
+  (let ((new-offset (+ mail-app-current-offset mail-app-message-limit)))
+    (mail-app--speak (format "Loading more messages, offset %d" new-offset) 'select-object)
+    (let* ((args (list "messages" "list"
+                       "-a" mail-app-current-account
+                       "-m" mail-app-current-mailbox
+                       "-l" (number-to-string mail-app-message-limit)
+                       "-o" (number-to-string new-offset)))
+           (args (if mail-app-show-only-unread
+                     (append args '("-u"))
+                   args))
+           (buf (current-buffer)))
+      (apply 'mail-app--run-command-async
+             (lambda (output)
+               (let ((new-messages (mail-app--parse-messages-output output)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (if (null new-messages)
+                         (mail-app--speak "No more messages" 'warn-user)
+                       (setq mail-app-current-offset new-offset)
+                       (setq mail-app-messages-data (append mail-app-messages-data new-messages))
+                       (mail-app--format-messages mail-app-messages-data)
+                       (mail-app--speak (format "Loaded %d more messages, total %d"
+                                                (length new-messages)
+                                                (length mail-app-messages-data))
+                                        'task-done))))))
+             args))))
 
 (defun mail-app-view-message-at-point ()
   "View the full message at point."
@@ -1132,6 +1170,7 @@ Optionally play audio ICON."
       "a" 'mail-app-archive-message-at-point
       "t" 'mail-app-mark-message-at-point
       "u" 'mail-app-show-unread
+      "N" 'mail-app-load-more-messages
       ;; Marking for bulk operations
       "m" 'mail-app-toggle-mark-at-point
       "M" 'mail-app-unmark-at-point
