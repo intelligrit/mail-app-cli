@@ -825,15 +825,27 @@ If nil, you will be prompted to select one when needed."
 ;;; Marking and bulk operations
 
 (defun mail-app--update-mark-indicator ()
-  "Update the mark indicator for the current line."
+  "Update the mark indicator and speech text for the current line."
   (when-let* ((message (mail-app--get-message-at-point))
               (id (plist-get message :id)))
-    (let ((inhibit-read-only t)
-          (marked (member id mail-app-marked-messages)))
+    (let* ((inhibit-read-only t)
+           (marked (member id mail-app-marked-messages))
+           (flagged (plist-get message :flagged))
+           (subject (plist-get message :subject))
+           (from (plist-get message :from))
+           (date (plist-get message :date))
+           (speech-text (format "%s%s%s from %s, %s"
+                                (if marked "Marked. " "")
+                                (if flagged "Flagged message: " "")
+                                subject from date)))
       (save-excursion
         (beginning-of-line)
-        (delete-char 1)
-        (insert (if marked "*" " "))))))
+        (let ((line-end (line-end-position)))
+          ;; Update mark indicator
+          (delete-char 1)
+          (insert (if marked "*" " "))
+          ;; Update speech text property
+          (put-text-property (line-beginning-position) line-end 'emacspeak-speak speech-text))))))
 
 (defun mail-app-toggle-mark-at-point ()
   "Toggle mark on the message at point for bulk operations."
@@ -845,14 +857,18 @@ If nil, you will be prompted to select one when needed."
         (progn
           (setq mail-app-marked-messages (delete id mail-app-marked-messages))
           (mail-app--update-mark-indicator)
-          (message "Unmarked")
-          (forward-line 1))
+          (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
+            (emacspeak-icon 'delete-object))
+          (forward-line 1)
+          (mail-app--emacspeak-speak-line))
       ;; Mark
       (progn
         (push id mail-app-marked-messages)
         (mail-app--update-mark-indicator)
-        (message "Marked")
-        (forward-line 1)))))
+        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
+          (emacspeak-icon 'mark-object))
+        (forward-line 1)
+        (mail-app--emacspeak-speak-line)))))
 
 (defun mail-app-unmark-at-point ()
   "Unmark the message at point."
@@ -861,8 +877,10 @@ If nil, you will be prompted to select one when needed."
               (id (plist-get message :id)))
     (setq mail-app-marked-messages (delete id mail-app-marked-messages))
     (mail-app--update-mark-indicator)
-    (message "Unmarked")
-    (forward-line 1)))
+    (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
+      (emacspeak-icon 'delete-object))
+    (forward-line 1)
+    (mail-app--emacspeak-speak-line)))
 
 (defun mail-app-unmark-all ()
   "Unmark all marked messages."
