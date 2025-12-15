@@ -66,6 +66,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "g") 'mail-app-refresh)
     (define-key map (kbd "r") 'mail-app-refresh)
     (define-key map (kbd "s") 'mail-app-search)
+    (define-key map (kbd "S") 'mail-app-search-all)
     (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
@@ -80,6 +81,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "g") 'mail-app-refresh)
     (define-key map (kbd "r") 'mail-app-refresh)
     (define-key map (kbd "s") 'mail-app-search)
+    (define-key map (kbd "S") 'mail-app-search-all)
     (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
@@ -94,6 +96,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "g") 'mail-app-refresh)
     (define-key map (kbd "r") 'mail-app-refresh)
     (define-key map (kbd "s") 'mail-app-search)
+    (define-key map (kbd "S") 'mail-app-search-all)
     (define-key map (kbd "f") 'mail-app-flag-message-at-point)
     (define-key map (kbd "d") 'mail-app-delete-message-at-point)
     (define-key map (kbd "a") 'mail-app-archive-message-at-point)
@@ -300,7 +303,7 @@ Optionally play audio ICON."
     (erase-buffer)
     (insert (propertize "Mail.app Accounts\n" 'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] view mailboxes  [c] compose  [s] search  [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert "Commands: [RET] view mailboxes  [c] compose  [s] search  [S] search all  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-40s %-10s\n"
                     "ACCOUNT" "EMAIL" "ENABLED"))
     (insert (make-string 85 ?-) "\n")
@@ -343,7 +346,7 @@ Optionally play audio ICON."
                                 (or mail-app-current-account "All Accounts"))
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] view messages  [c] compose  [s] search  [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert "Commands: [RET] view messages  [c] compose  [s] search  [S] search all  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-50s %8s %8s\n"
                     "ACCOUNT" "MAILBOX" "UNREAD" "TOTAL"))
     (insert (make-string 100 ?-) "\n")
@@ -375,7 +378,7 @@ Optionally play audio ICON."
                         'face 'bold))
     (insert "\n")
     (insert "Commands: [RET] read  [c] compose  [f] flag  [d] delete  [a] archive  [t] toggle read/unread\n")
-    (insert "          [s] search  [u] unread filter  [N] load more  [g/r] refresh  [q] quit  [?] help\n")
+    (insert "          [s] search here  [S] search all  [u] unread filter  [N] load more  [g/r] refresh  [q] quit  [?] help\n")
     (insert "Marking:  [m] mark  [M] unmark  [U] unmark-all  [x] delete marked\n")
     (insert "          [,a] archive marked  [,f] flag marked  [,r] read  [,u] unread\n\n")
     (insert (format "%-2s %-4s %-35s %-58s %-30s\n"
@@ -1066,18 +1069,64 @@ Optionally play audio ICON."
 
 ;;;###autoload
 (defun mail-app-search (query)
-  "Search for messages matching QUERY."
+  "Search for messages matching QUERY in current context.
+If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
   (interactive "sSearch query: ")
-  (mail-app--speak (format "Searching for %s" query) 'select-object)
+  (let* ((account (if (and mail-app-current-account
+                           (not (string-equal mail-app-current-account "Search Results")))
+                      mail-app-current-account
+                    ""))
+         (mailbox (if (and mail-app-current-mailbox
+                           (not (string-equal mail-app-current-mailbox "Search Results")))
+                      mail-app-current-mailbox
+                    ""))
+         (context-desc (cond
+                        ((and (not (string-empty-p account)) (not (string-empty-p mailbox)))
+                         (format " in %s/%s" account mailbox))
+                        ((not (string-empty-p account))
+                         (format " in %s" account))
+                        (t " in all INBOX mailboxes"))))
+    (mail-app--speak (format "Searching for %s%s" query context-desc) 'select-object)
+    (let ((buf (get-buffer-create (format "*Mail.app Search: %s*" query))))
+      ;; Setup buffer immediately with loading message
+      (with-current-buffer buf
+        (mail-app-messages-mode)
+        (setq mail-app-current-account account)
+        (setq mail-app-current-mailbox (format "Search: %s" query))
+        (let ((inhibit-read-only t))
+          (erase-buffer)
+          (insert "Searching...\n")))
+      (switch-to-buffer buf)
+      ;; Search asynchronously
+      (let ((args (list "search" query "-l" (number-to-string mail-app-message-limit))))
+        (unless (string-empty-p account)
+          (setq args (append args (list "-a" account))))
+        (unless (string-empty-p mailbox)
+          (setq args (append args (list "-m" mailbox))))
+        (apply 'mail-app--run-command-async
+               (lambda (output)
+                 (let ((messages (mail-app--parse-messages-output output)))
+                   (when (buffer-live-p buf)
+                     (with-current-buffer buf
+                       (setq mail-app-messages-data messages)
+                       (mail-app--format-messages messages)
+                       (mail-app--speak (format "Found %d messages" (length messages)) 'task-done)))))
+               args)))))
+
+;;;###autoload
+(defun mail-app-search-all (query)
+  "Search for messages matching QUERY across all INBOX mailboxes."
+  (interactive "sSearch all query: ")
+  (mail-app--speak (format "Searching all accounts for %s" query) 'select-object)
   (let ((buf (get-buffer-create (format "*Mail.app Search: %s*" query))))
     ;; Setup buffer immediately with loading message
     (with-current-buffer buf
       (mail-app-messages-mode)
-      (setq mail-app-current-account "Search Results")
-      (setq mail-app-current-mailbox query)
+      (setq mail-app-current-account "")
+      (setq mail-app-current-mailbox (format "Search: %s" query))
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert "Searching...\n")))
+        (insert "Searching all accounts...\n")))
     (switch-to-buffer buf)
     ;; Search asynchronously
     (mail-app--run-command-async
@@ -1141,6 +1190,7 @@ Optionally play audio ICON."
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
       "s" 'mail-app-search
+      "S" 'mail-app-search-all
       "q" 'quit-window
       "ZZ" 'quit-window
       "ZQ" 'quit-window
@@ -1153,6 +1203,7 @@ Optionally play audio ICON."
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
       "s" 'mail-app-search
+      "S" 'mail-app-search-all
       "q" 'quit-window
       "ZZ" 'quit-window
       "ZQ" 'quit-window
@@ -1165,6 +1216,7 @@ Optionally play audio ICON."
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
       "s" 'mail-app-search
+      "S" 'mail-app-search-all
       "f" 'mail-app-flag-message-at-point
       "d" 'mail-app-delete-message-at-point
       "a" 'mail-app-archive-message-at-point
