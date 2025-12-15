@@ -146,6 +146,26 @@ If nil, you will be prompted to select one when needed."
           (buffer-string)
         (error "Mail app command failed: %s" (buffer-string))))))
 
+(defun mail-app--run-command-async (callback &rest args)
+  "Run mail-app-cli command with ARGS asynchronously and call CALLBACK with output."
+  (let ((output-buffer (generate-new-buffer " *mail-app-async*")))
+    (make-process
+     :name "mail-app-cli"
+     :buffer output-buffer
+     :command (cons mail-app-command args)
+     :sentinel
+     (lambda (process event)
+       (when (string-match-p "finished" event)
+         (with-current-buffer (process-buffer process)
+           (let ((output (buffer-string)))
+             (kill-buffer)
+             (funcall callback output))))
+       (when (string-match-p "exited abnormally" event)
+         (with-current-buffer (process-buffer process)
+           (let ((error-msg (buffer-string)))
+             (kill-buffer)
+             (message "Mail app command failed: %s" error-msg))))))))
+
 (defun mail-app--parse-accounts-output (output)
   "Parse accounts list OUTPUT into a list of plists."
   (let ((lines (split-string output "\n" t))
@@ -263,14 +283,28 @@ If nil, you will be prompted to select one when needed."
     (goto-char (point-min))
     (forward-line 2)))
 
+(defun mail-app--sort-mailboxes (mailboxes)
+  "Sort MAILBOXES with INBOX first, then alphabetically by name."
+  (sort mailboxes
+        (lambda (a b)
+          (let ((name-a (plist-get a :name))
+                (name-b (plist-get b :name)))
+            (cond
+             ;; INBOX always comes first
+             ((string-equal name-a "INBOX") t)
+             ((string-equal name-b "INBOX") nil)
+             ;; Otherwise sort alphabetically
+             (t (string< name-a name-b)))))))
+
 (defun mail-app--format-mailboxes (mailboxes)
   "Format MAILBOXES for display."
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (sorted-mailboxes (mail-app--sort-mailboxes mailboxes)))
     (erase-buffer)
     (insert (format "%-30s %-50s %8s %8s\n"
                     "ACCOUNT" "MAILBOX" "UNREAD" "TOTAL"))
     (insert (make-string 100 ?-) "\n")
-    (dolist (mailbox mailboxes)
+    (dolist (mailbox sorted-mailboxes)
       (let* ((account (plist-get mailbox :account))
              (name (plist-get mailbox :name))
              (unread (plist-get mailbox :unread))
@@ -292,9 +326,9 @@ If nil, you will be prompted to select one when needed."
   "Format MESSAGES for display."
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (insert (format "%-10s %-4s %-30s %-50s %-40s\n"
-                    "ID" "FLAG" "FROM" "SUBJECT" "DATE"))
-    (insert (make-string 140 ?-) "\n")
+    (insert (format "%-4s %-35s %-60s %-30s\n"
+                    "FLAG" "FROM" "SUBJECT" "DATE"))
+    (insert (make-string 135 ?-) "\n")
     (dolist (message messages)
       (let* ((id (plist-get message :id))
              (read (plist-get message :read))
@@ -303,14 +337,14 @@ If nil, you will be prompted to select one when needed."
              (subject (plist-get message :subject))
              (date (plist-get message :date))
              (flag-str (concat (if read "✓" " ") (if flagged "⚑" " ")))
-             (line (format "%-10s %-4s %-30s %-50s %-40s\n"
-                           id flag-str
-                           (truncate-string-to-width from 30 nil nil "...")
-                           (truncate-string-to-width subject 50 nil nil "...")
-                           (truncate-string-to-width date 40 nil nil "...")))
-             (speech-text (format "%s%s from %s, %s, ID %s"
+             (line (format "%-4s %-35s %-60s %-30s\n"
+                           flag-str
+                           (truncate-string-to-width from 35 nil nil "...")
+                           (truncate-string-to-width subject 60 nil nil "...")
+                           (truncate-string-to-width date 30 nil nil "...")))
+             (speech-text (format "%s%s from %s, %s"
                                   (if flagged "Flagged message: " "")
-                                  subject from date id))
+                                  subject from date))
              (start (point)))
         (insert line)
         (put-text-property start (point) 'mail-app-message-data message)
@@ -420,16 +454,25 @@ If nil, you will be prompted to select one when needed."
          (args (if mail-app-show-only-unread
                    (append args '("-u"))
                  args))
-         (output (apply 'mail-app--run-command args))
-         (messages (mail-app--parse-messages-output output))
          (buf (get-buffer-create (format "*Mail.app Messages: %s/%s*" account mailbox))))
+    ;; Setup buffer immediately with loading message
     (with-current-buffer buf
       (mail-app-messages-mode)
       (setq mail-app-current-account account)
       (setq mail-app-current-mailbox mailbox)
-      (setq mail-app-messages-data messages)
-      (mail-app--format-messages messages))
-    (switch-to-buffer buf)))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading messages...\n")))
+    (switch-to-buffer buf)
+    ;; Load messages asynchronously
+    (apply 'mail-app--run-command-async
+           (lambda (output)
+             (let ((messages (mail-app--parse-messages-output output)))
+               (when (buffer-live-p buf)
+                 (with-current-buffer buf
+                   (setq mail-app-messages-data messages)
+                   (mail-app--format-messages messages)))))
+           args)))
 
 (defun mail-app-view-message-at-point ()
   "View the full message at point."
