@@ -100,10 +100,10 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "M") 'mail-app-unmark-at-point)
     (define-key map (kbd "U") 'mail-app-unmark-all)
     (define-key map (kbd "x") 'mail-app-delete-marked)
-    (define-key map (kbd ", a") 'mail-app-archive-marked)
-    (define-key map (kbd ", f") 'mail-app-flag-marked)
-    (define-key map (kbd ", r") 'mail-app-mark-marked-as-read)
-    (define-key map (kbd ", u") 'mail-app-mark-marked-as-unread)
+    (define-key map (kbd ",a") 'mail-app-archive-marked)
+    (define-key map (kbd ",f") 'mail-app-flag-marked)
+    (define-key map (kbd ",r") 'mail-app-mark-marked-as-read)
+    (define-key map (kbd ",u") 'mail-app-mark-marked-as-unread)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
     map)
@@ -905,10 +905,10 @@ If nil, you will be prompted to select one when needed."
       "M" 'mail-app-unmark-at-point
       "U" 'mail-app-unmark-all
       "x" 'mail-app-delete-marked
-      ", a" 'mail-app-archive-marked
-      ", f" 'mail-app-flag-marked
-      ", r" 'mail-app-mark-marked-as-read
-      ", u" 'mail-app-mark-marked-as-unread
+      ",a" 'mail-app-archive-marked
+      ",f" 'mail-app-flag-marked
+      ",r" 'mail-app-mark-marked-as-read
+      ",u" 'mail-app-mark-marked-as-unread
       "q" 'quit-window
       "ZZ" 'quit-window
       "ZQ" 'quit-window
