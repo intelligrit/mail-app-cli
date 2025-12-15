@@ -883,23 +883,17 @@ If nil, you will be prompted to select one when needed."
           (setq mail-app-marked-messages (delete id mail-app-marked-messages))
           (mail-app--update-mark-indicator)
           (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
+            (dtk-speak "Unmarked")
             (emacspeak-icon 'delete-object))
-          (forward-line 1)
-          (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-            (let ((speech-text (get-text-property (point) 'emacspeak-speak)))
-              (when speech-text
-                (dtk-speak speech-text)))))
+          (forward-line 1))
       ;; Mark
       (progn
         (push id mail-app-marked-messages)
         (mail-app--update-mark-indicator)
         (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
+          (dtk-speak "Marked")
           (emacspeak-icon 'mark-object))
-        (forward-line 1)
-        (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-          (let ((speech-text (get-text-property (point) 'emacspeak-speak)))
-            (when speech-text
-              (dtk-speak speech-text))))))))
+        (forward-line 1)))))
 
 (defun mail-app-unmark-at-point ()
   "Unmark the message at point."
@@ -909,12 +903,9 @@ If nil, you will be prompted to select one when needed."
     (setq mail-app-marked-messages (delete id mail-app-marked-messages))
     (mail-app--update-mark-indicator)
     (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
+      (dtk-speak "Unmarked")
       (emacspeak-icon 'delete-object))
-    (forward-line 1)
-    (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-      (let ((speech-text (get-text-property (point) 'emacspeak-speak)))
-        (when speech-text
-          (dtk-speak speech-text))))))
+    (forward-line 1)))
 
 (defun mail-app-unmark-all ()
   "Unmark all marked messages."
@@ -1086,8 +1077,7 @@ If nil, you will be prompted to select one when needed."
 \\{mail-app-accounts-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines t)
-  (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-    (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t)))
+  (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t))
 
 (define-derived-mode mail-app-mailboxes-mode special-mode "Mail-App-Mailboxes"
   "Major mode for viewing mail-app mailboxes.
@@ -1095,8 +1085,7 @@ If nil, you will be prompted to select one when needed."
 \\{mail-app-mailboxes-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines t)
-  (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-    (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t)))
+  (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t))
 
 (define-derived-mode mail-app-messages-mode special-mode "Mail-App-Messages"
   "Major mode for viewing mail-app messages.
@@ -1104,8 +1093,7 @@ If nil, you will be prompted to select one when needed."
 \\{mail-app-messages-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines t)
-  (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-    (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t)))
+  (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t))
 
 (define-derived-mode mail-app-message-view-mode special-mode "Mail-App-Message"
   "Major mode for viewing a single mail-app message.
@@ -1113,8 +1101,7 @@ If nil, you will be prompted to select one when needed."
 \\{mail-app-message-view-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines nil)
-  (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
-    (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t)))
+  (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t))
 
 ;;; Evil mode integration
 
