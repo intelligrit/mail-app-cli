@@ -56,12 +56,6 @@ If nil, you will be prompted to select one when needed."
   :type 'integer
   :group 'mail-app)
 
-(defcustom mail-app-use-emacs-compose t
-  "If non-nil, use Emacs compose-mail for composing messages.
-If nil, open Mail.app for composing."
-  :type 'boolean
-  :group 'mail-app)
-
 ;;; Keymaps
 
 (defvar mail-app-accounts-mode-map
@@ -320,9 +314,9 @@ If nil, open Mail.app for composing."
           (let ((name-a (plist-get a :name))
                 (name-b (plist-get b :name)))
             (cond
-             ;; INBOX always comes first
-             ((string-equal name-a "INBOX") t)
-             ((string-equal name-b "INBOX") nil)
+             ;; INBOX always comes first (case-insensitive)
+             ((string-equal (upcase name-a) "INBOX") t)
+             ((string-equal (upcase name-b) "INBOX") nil)
              ;; Otherwise sort alphabetically
              (t (string< name-a name-b)))))))
 
@@ -803,11 +797,9 @@ If nil, open Mail.app for composing."
 (with-eval-after-load 'message
   (defun mail-app--message-send-hook ()
     "Hook to send message via mail-app-cli when using message-mode."
-    (when (and (boundp 'mail-app-use-emacs-compose)
-               mail-app-use-emacs-compose
-               (or (and (boundp 'message-options)
-                        (assq 'account message-options))
-                   mail-app-current-account))
+    (when (or (and (boundp 'message-options)
+                   (assq 'account message-options))
+              mail-app-current-account)
       (mail-app-send-message)
       t))  ; Return t to prevent normal sending
 
