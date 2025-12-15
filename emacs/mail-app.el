@@ -56,6 +56,19 @@ If nil, you will be prompted to select one when needed."
 
 ;;; Keymaps
 
+(defvar mail-app-accounts-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "RET") 'mail-app-view-mailboxes-at-point)
+    (define-key map (kbd "n") 'next-line)
+    (define-key map (kbd "p") 'previous-line)
+    (define-key map (kbd "g") 'mail-app-refresh)
+    (define-key map (kbd "r") 'mail-app-refresh)
+    (define-key map (kbd "s") 'mail-app-search)
+    (define-key map (kbd "q") 'quit-window)
+    (define-key map (kbd "?") 'describe-mode)
+    map)
+  "Keymap for `mail-app-accounts-mode'.")
+
 (defvar mail-app-mailboxes-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "RET") 'mail-app-view-messages-at-point)
@@ -111,6 +124,9 @@ If nil, you will be prompted to select one when needed."
 (defvar-local mail-app-current-message-id nil
   "The currently displayed message ID.")
 
+(defvar-local mail-app-accounts-data nil
+  "Cached accounts data for the current buffer.")
+
 (defvar-local mail-app-mailboxes-data nil
   "Cached mailboxes data for the current buffer.")
 
@@ -130,17 +146,37 @@ If nil, you will be prompted to select one when needed."
           (buffer-string)
         (error "Mail app command failed: %s" (buffer-string))))))
 
+(defun mail-app--parse-accounts-output (output)
+  "Parse accounts list OUTPUT into a list of plists."
+  (let ((lines (split-string output "\n" t))
+        (accounts '()))
+    ;; Skip header and separator lines
+    (setq lines (cddr lines))
+    ;; Parse each line
+    (dolist (line lines)
+      (when (string-match "^\\(.+?\\)\\s-+\\(.+?\\)\\s-+\\(.+?\\)\\s-+\\(yes\\|no\\)\\s-*$" line)
+        (let ((name (string-trim (match-string 1 line)))
+              (email (string-trim (match-string 2 line)))
+              (username (string-trim (match-string 3 line)))
+              (enabled (string= "yes" (string-trim (match-string 4 line)))))
+          (push (list :name name
+                      :email email
+                      :username username
+                      :enabled enabled)
+                accounts))))
+    (nreverse accounts)))
+
 (defun mail-app--parse-mailboxes-output (output)
   "Parse mailboxes list OUTPUT into a list of plists."
   (let ((lines (split-string output "\n" t))
         (mailboxes '()))
-    ;; Skip header line
-    (setq lines (cdr lines))
-    ;; Parse each line
+    ;; Skip header and separator lines
+    (setq lines (cddr lines))
+    ;; Parse each line - match two numbers at the end, then split the rest
     (dolist (line lines)
-      (when (string-match "^\\([^\t]+\\)\t+\\([^\t]+\\)\t+\\([0-9]+\\)\t+\\([0-9]+\\)" line)
-        (let ((account (match-string 1 line))
-              (name (match-string 2 line))
+      (when (string-match "^\\(.+?\\)\\s-+\\(.+?\\)\\s-+\\([0-9]+\\)\\s-+\\([0-9]+\\)\\s-*$" line)
+        (let ((account (string-trim (match-string 1 line)))
+              (name (string-trim (match-string 2 line)))
               (unread (string-to-number (match-string 3 line)))
               (total (string-to-number (match-string 4 line))))
           (push (list :account account
@@ -154,26 +190,30 @@ If nil, you will be prompted to select one when needed."
   "Parse messages list OUTPUT into a list of plists."
   (let ((lines (split-string output "\n" t))
         (messages '()))
-    ;; Skip header line
-    (setq lines (cdr lines))
-    ;; Parse each line
+    ;; Skip header and separator lines
+    (setq lines (cddr lines))
+    ;; Parse each line - split on 3+ spaces which act as column separators
     (dolist (line lines)
-      (when (string-match "^\\([^\t]+\\)\t+\\([^\t]*\\)\t+\\([^\t]+\\)\t+\\([^\t]+\\)\t+\\([^\t]+\\)\t+\\([^\t]+\\)" line)
-        (let ((id (match-string 1 line))
-              (flags (match-string 2 line))
-              (from (match-string 3 line))
-              (subject (match-string 4 line))
-              (date (match-string 5 line))
-              (size (match-string 6 line)))
-          (push (list :id id
-                      :read (string-match "✓" flags)
-                      :flagged (string-match "⚑" flags)
-                      :from from
-                      :subject subject
-                      :date date
-                      :size size)
-                messages))))
+      (let ((fields (split-string line "\\s-\\s-\\s-+" t)))
+        (when (>= (length fields) 4)
+          (let* ((id (string-trim (nth 0 fields)))
+                 (subject (string-trim (nth 1 fields)))
+                 (from (string-trim (nth 2 fields)))
+                 (date (string-trim (nth 3 fields)))
+                 (read-flag (if (>= (length fields) 5) (nth 4 fields) ""))
+                 (flagged-flag (if (>= (length fields) 6) (nth 5 fields) "")))
+            (push (list :id id
+                        :read (not (string-match-p "✓" (or read-flag "")))
+                        :flagged (string-match-p "⚑" (or flagged-flag ""))
+                        :from from
+                        :subject subject
+                        :date date)
+                  messages)))))
     (nreverse messages)))
+
+(defun mail-app--get-account-at-point ()
+  "Get the account data at point."
+  (get-text-property (point) 'mail-app-account-data))
 
 (defun mail-app--get-mailbox-at-point ()
   "Get the mailbox data at point."
@@ -198,6 +238,30 @@ If nil, you will be prompted to select one when needed."
     (mail-app--emacspeak-speak-line)))
 
 ;;; Display functions
+
+(defun mail-app--format-accounts (accounts)
+  "Format ACCOUNTS for display."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (format "%-30s %-40s %-10s\n"
+                    "ACCOUNT" "EMAIL" "ENABLED"))
+    (insert (make-string 85 ?-) "\n")
+    (dolist (account accounts)
+      (let* ((name (plist-get account :name))
+             (email (plist-get account :email))
+             (enabled (plist-get account :enabled))
+             (line (format "%-30s %-40s %-10s\n"
+                           name email (if enabled "yes" "no")))
+             (speech-text (format "%s account, %s, %s"
+                                  name email (if enabled "enabled" "disabled")))
+             (start (point)))
+        (insert line)
+        (put-text-property start (point) 'mail-app-account-data account)
+        (put-text-property start (point) 'emacspeak-speak speech-text)
+        (when enabled
+          (put-text-property start (point) 'face 'default))))
+    (goto-char (point-min))
+    (forward-line 2)))
 
 (defun mail-app--format-mailboxes (mailboxes)
   "Format MAILBOXES for display."
@@ -228,9 +292,9 @@ If nil, you will be prompted to select one when needed."
   "Format MESSAGES for display."
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (insert (format "%-10s %-4s %-30s %-50s %-20s\n"
+    (insert (format "%-10s %-4s %-30s %-50s %-40s\n"
                     "ID" "FLAG" "FROM" "SUBJECT" "DATE"))
-    (insert (make-string 120 ?-) "\n")
+    (insert (make-string 140 ?-) "\n")
     (dolist (message messages)
       (let* ((id (plist-get message :id))
              (read (plist-get message :read))
@@ -239,11 +303,11 @@ If nil, you will be prompted to select one when needed."
              (subject (plist-get message :subject))
              (date (plist-get message :date))
              (flag-str (concat (if read "✓" " ") (if flagged "⚑" " ")))
-             (line (format "%-10s %-4s %-30s %-50s %-20s\n"
+             (line (format "%-10s %-4s %-30s %-50s %-40s\n"
                            id flag-str
                            (truncate-string-to-width from 30 nil nil "...")
                            (truncate-string-to-width subject 50 nil nil "...")
-                           date))
+                           (truncate-string-to-width date 40 nil nil "...")))
              (speech-text (format "%s%s from %s, %s, ID %s"
                                   (if flagged "Flagged message: " "")
                                   subject from date id))
@@ -265,7 +329,45 @@ If nil, you will be prompted to select one when needed."
     (insert output)
     (goto-char (point-min))))
 
+;;; Interactive commands - Accounts
+
+;;;###autoload
+(defun mail-app-list-accounts ()
+  "List all Mail.app accounts."
+  (interactive)
+  (let* ((output (mail-app--run-command "accounts" "list"))
+         (accounts (mail-app--parse-accounts-output output))
+         (buf (get-buffer-create "*Mail.app Accounts*")))
+    (with-current-buffer buf
+      (mail-app-accounts-mode)
+      (setq mail-app-accounts-data accounts)
+      (mail-app--format-accounts accounts))
+    (switch-to-buffer buf)))
+
+(defun mail-app-view-mailboxes-at-point ()
+  "View mailboxes for the account at point."
+  (interactive)
+  (let ((account (mail-app--get-account-at-point)))
+    (if (not account)
+        (message "No account at point")
+      (let ((name (plist-get account :name)))
+        (mail-app-list-mailboxes-for-account name)))))
+
 ;;; Interactive commands - Mailboxes
+
+(defun mail-app-list-mailboxes-for-account (account)
+  "List mailboxes for ACCOUNT."
+  (interactive
+   (list (read-string "Account: " mail-app-default-account)))
+  (let* ((output (mail-app--run-command "mailboxes" "list" "-a" account))
+         (mailboxes (mail-app--parse-mailboxes-output output))
+         (buf (get-buffer-create (format "*Mail.app Mailboxes: %s*" account))))
+    (with-current-buffer buf
+      (mail-app-mailboxes-mode)
+      (setq mail-app-current-account account)
+      (setq mail-app-mailboxes-data mailboxes)
+      (mail-app--format-mailboxes mailboxes))
+    (switch-to-buffer buf)))
 
 ;;;###autoload
 (defun mail-app-list-mailboxes ()
@@ -294,8 +396,12 @@ If nil, you will be prompted to select one when needed."
   "Refresh the current view."
   (interactive)
   (cond
+   ((eq major-mode 'mail-app-accounts-mode)
+    (mail-app-list-accounts))
    ((eq major-mode 'mail-app-mailboxes-mode)
-    (mail-app-list-mailboxes))
+    (if mail-app-current-account
+        (mail-app-list-mailboxes-for-account mail-app-current-account)
+      (mail-app-list-mailboxes)))
    ((eq major-mode 'mail-app-messages-mode)
     (when (and mail-app-current-account mail-app-current-mailbox)
       (mail-app-list-messages mail-app-current-account mail-app-current-mailbox)))
@@ -476,6 +582,15 @@ If nil, you will be prompted to select one when needed."
 
 ;;; Major modes
 
+(define-derived-mode mail-app-accounts-mode special-mode "Mail-App-Accounts"
+  "Major mode for viewing mail-app accounts.
+
+\\{mail-app-accounts-mode-map}"
+  (setq buffer-read-only t)
+  (setq truncate-lines t)
+  (when (and (boundp 'emacspeak-speak-mode) emacspeak-speak-mode)
+    (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t)))
+
 (define-derived-mode mail-app-mailboxes-mode special-mode "Mail-App-Mailboxes"
   "Major mode for viewing mail-app mailboxes.
 
@@ -507,11 +622,23 @@ If nil, you will be prompted to select one when needed."
 
 (with-eval-after-load 'evil
   (when (fboundp 'evil-set-initial-state)
+    (evil-set-initial-state 'mail-app-accounts-mode 'normal)
     (evil-set-initial-state 'mail-app-mailboxes-mode 'normal)
     (evil-set-initial-state 'mail-app-messages-mode 'normal)
     (evil-set-initial-state 'mail-app-message-view-mode 'normal))
 
   (when (fboundp 'evil-define-key)
+    (evil-define-key 'normal mail-app-accounts-mode-map
+      (kbd "RET") 'mail-app-view-mailboxes-at-point
+      "g" nil
+      "gr" 'mail-app-refresh
+      "r" 'mail-app-refresh
+      "s" 'mail-app-search
+      "q" 'quit-window
+      "ZZ" 'quit-window
+      "ZQ" 'quit-window
+      "?" 'describe-mode)
+
     (evil-define-key 'normal mail-app-mailboxes-mode-map
       (kbd "RET") 'mail-app-view-messages-at-point
       "g" nil
@@ -552,6 +679,12 @@ If nil, you will be prompted to select one when needed."
 ;;; Emacspeak advice
 
 (with-eval-after-load 'emacspeak
+  (defadvice mail-app-list-accounts (after emacspeak pre act comp)
+    "Speak when opening accounts list."
+    (when (called-interactively-p 'interactive)
+      (emacspeak-icon 'open-object)
+      (dtk-speak "Opened accounts list")))
+
   (defadvice mail-app-list-mailboxes (after emacspeak pre act comp)
     "Speak when opening mailboxes list."
     (when (called-interactively-p 'interactive)
