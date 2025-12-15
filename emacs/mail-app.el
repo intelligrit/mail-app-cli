@@ -263,6 +263,34 @@ If nil, you will be prompted to select one when needed."
                   messages)))))
     (nreverse messages)))
 
+(defun mail-app--parse-search-output (output)
+  "Parse search results OUTPUT into a list of plists."
+  (let ((lines (split-string output "\n" t))
+        (messages '()))
+    ;; Skip header and separator lines
+    (setq lines (cddr lines))
+    ;; Parse each line - search has different columns: ACCOUNT, MAILBOX, SUBJECT, FROM, DATE
+    (dolist (line lines)
+      (let ((fields (split-string line "\\s-\\s-\\s-+" t)))
+        (when (>= (length fields) 5)
+          (let* ((account (string-trim (nth 0 fields)))
+                 (mailbox (string-trim (nth 1 fields)))
+                 (subject (string-trim (nth 2 fields)))
+                 (from (string-trim (nth 3 fields)))
+                 (date (string-trim (nth 4 fields)))
+                 ;; Generate a pseudo-ID from account/mailbox/subject for uniqueness
+                 (id (format "%s-%s-%s" account mailbox (substring subject 0 (min 20 (length subject))))))
+            (push (list :id id
+                        :account account
+                        :mailbox mailbox
+                        :read nil  ; Search doesn't provide read status
+                        :flagged nil  ; Search doesn't provide flag status
+                        :from from
+                        :subject subject
+                        :date date)
+                  messages)))))
+    (nreverse messages)))
+
 (defun mail-app--get-account-at-point ()
   "Get the account data at point."
   (get-text-property (point) 'mail-app-account-data))
@@ -376,11 +404,13 @@ Optionally play audio ICON."
 
 (defun mail-app--format-messages (messages)
   "Format MESSAGES for display."
-  (let ((inhibit-read-only t))
+  (let* ((inhibit-read-only t)
+         ;; Check if these are search results (have account/mailbox fields)
+         (is-search (and messages (plist-get (car messages) :account))))
     (erase-buffer)
     (insert (propertize (format "Mail.app Messages: %s/%s\n"
-                                mail-app-current-account
-                                mail-app-current-mailbox)
+                                (or mail-app-current-account "Search Results")
+                                (or mail-app-current-mailbox "All"))
                         'face 'bold))
     (insert "\n")
     (insert "Commands: [RET] read  [c] compose  [f] flag  [d] delete  [a] archive\n")
@@ -388,35 +418,64 @@ Optionally play audio ICON."
     (insert "          [N] load more  [g/r] refresh  [q] quit  [?] help\n")
     (insert "Marking:  [m] mark  [M] unmark  [U] unmark-all  [x] delete marked\n")
     (insert "          [,a] archive  [,f] flag  [,r] read  [,u] unread\n\n")
-    (insert (format "%-2s %-4s %-35s %-58s %-30s\n"
-                    "" "FLAG" "FROM" "SUBJECT" "DATE"))
-    (insert (make-string 135 ?-) "\n")
-    (dolist (message messages)
-      (let* ((id (plist-get message :id))
-             (read (plist-get message :read))
-             (flagged (plist-get message :flagged))
-             (from (plist-get message :from))
-             (subject (plist-get message :subject))
-             (date (plist-get message :date))
-             (marked (member id mail-app-marked-messages))
-             (mark-str (if marked "*" " "))
-             (flag-str (concat (if read "✓" " ") (if flagged "⚑" " ")))
-             (line (format "%-2s %-4s %-35s %-58s %-30s\n"
-                           mark-str
-                           flag-str
-                           (truncate-string-to-width from 35 nil nil "...")
-                           (truncate-string-to-width subject 58 nil nil "...")
-                           (truncate-string-to-width date 30 nil nil "...")))
-             (speech-text (format "%s%s%s from %s, %s"
-                                  (if marked "Marked. " "")
-                                  (if flagged "Flagged message: " "")
-                                  subject from date))
-             (start (point)))
-        (insert line)
-        (put-text-property start (point) 'mail-app-message-data message)
-        (put-text-property start (point) 'emacspeak-speak speech-text)
-        (unless read
-          (put-text-property start (point) 'face 'bold))))
+    (if is-search
+        ;; Search results: show ACCOUNT and MAILBOX columns
+        (progn
+          (insert (format "%-2s %-20s %-15s %-30s %-40s\n"
+                          "" "ACCOUNT" "MAILBOX" "FROM" "SUBJECT"))
+          (insert (make-string 110 ?-) "\n")
+          (dolist (message messages)
+            (let* ((id (plist-get message :id))
+                   (account (plist-get message :account))
+                   (mailbox (plist-get message :mailbox))
+                   (from (plist-get message :from))
+                   (subject (plist-get message :subject))
+                   (marked (member id mail-app-marked-messages))
+                   (mark-str (if marked "*" " "))
+                   (line (format "%-2s %-20s %-15s %-30s %-40s\n"
+                                 mark-str
+                                 (truncate-string-to-width account 20 nil nil "...")
+                                 (truncate-string-to-width mailbox 15 nil nil "...")
+                                 (truncate-string-to-width from 30 nil nil "...")
+                                 (truncate-string-to-width subject 40 nil nil "...")))
+                   (speech-text (format "%s%s from %s in %s/%s"
+                                        (if marked "Marked. " "")
+                                        subject from account mailbox))
+                   (start (point)))
+              (insert line)
+              (put-text-property start (point) 'mail-app-message-data message)
+              (put-text-property start (point) 'emacspeak-speak speech-text))))
+      ;; Regular message list: show FLAGS and DATE
+      (progn
+        (insert (format "%-2s %-4s %-35s %-58s %-30s\n"
+                        "" "FLAG" "FROM" "SUBJECT" "DATE"))
+        (insert (make-string 135 ?-) "\n")
+        (dolist (message messages)
+          (let* ((id (plist-get message :id))
+                 (read (plist-get message :read))
+                 (flagged (plist-get message :flagged))
+                 (from (plist-get message :from))
+                 (subject (plist-get message :subject))
+                 (date (plist-get message :date))
+                 (marked (member id mail-app-marked-messages))
+                 (mark-str (if marked "*" " "))
+                 (flag-str (concat (if read "✓" " ") (if flagged "⚑" " ")))
+                 (line (format "%-2s %-4s %-35s %-58s %-30s\n"
+                               mark-str
+                               flag-str
+                               (truncate-string-to-width from 35 nil nil "...")
+                               (truncate-string-to-width subject 58 nil nil "...")
+                               (truncate-string-to-width date 30 nil nil "...")))
+                 (speech-text (format "%s%s%s from %s, %s"
+                                      (if marked "Marked. " "")
+                                      (if flagged "Flagged message: " "")
+                                      subject from date))
+                 (start (point)))
+            (insert line)
+            (put-text-property start (point) 'mail-app-message-data message)
+            (put-text-property start (point) 'emacspeak-speak speech-text)
+            (unless read
+              (put-text-property start (point) 'face 'bold))))))
     (goto-char (point-min))
     (forward-line 9)))  ; Skip title, blank, command lines (5), blank, header
 
@@ -605,8 +664,11 @@ Optionally play audio ICON."
   (let ((message (mail-app--get-message-at-point)))
     (if (not message)
         (message "No message at point")
-      (let ((id (plist-get message :id)))
-        (mail-app-view-message id mail-app-current-account mail-app-current-mailbox)))))
+      (let* ((id (plist-get message :id))
+             ;; For search results, use account/mailbox from message data
+             (account (or (plist-get message :account) mail-app-current-account))
+             (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox)))
+        (mail-app-view-message id account mailbox)))))
 
 (defun mail-app-view-message (message-id account mailbox)
   "View full MESSAGE-ID in ACCOUNT and MAILBOX."
@@ -1167,7 +1229,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
           (setq args (append args (list "-m" mailbox))))
         (apply 'mail-app--run-command-async
                (lambda (output)
-                 (let ((messages (mail-app--parse-messages-output output)))
+                 (let ((messages (mail-app--parse-search-output output)))
                    (when (buffer-live-p buf)
                      (with-current-buffer buf
                        (setq mail-app-messages-data messages)
@@ -1193,7 +1255,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
     ;; Search asynchronously
     (mail-app--run-command-async
      (lambda (output)
-       (let ((messages (mail-app--parse-messages-output output)))
+       (let ((messages (mail-app--parse-search-output output)))
          (when (buffer-live-p buf)
            (with-current-buffer buf
              (setq mail-app-messages-data messages)
