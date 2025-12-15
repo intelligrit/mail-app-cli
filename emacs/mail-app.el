@@ -275,6 +275,9 @@ If nil, you will be prompted to select one when needed."
   "Format ACCOUNTS for display."
   (let ((inhibit-read-only t))
     (erase-buffer)
+    (insert (propertize "Mail.app Accounts\n" 'face 'bold))
+    (insert "\n")
+    (insert "Commands: [RET] view mailboxes  [s] search  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-40s %-10s\n"
                     "ACCOUNT" "EMAIL" "ENABLED"))
     (insert (make-string 85 ?-) "\n")
@@ -293,7 +296,7 @@ If nil, you will be prompted to select one when needed."
         (when enabled
           (put-text-property start (point) 'face 'default))))
     (goto-char (point-min))
-    (forward-line 2)))
+    (forward-line 5)))  ; Skip title, blank line, commands, blank line, header
 
 (defun mail-app--sort-mailboxes (mailboxes)
   "Sort MAILBOXES with INBOX first, then alphabetically by name."
@@ -313,6 +316,11 @@ If nil, you will be prompted to select one when needed."
   (let ((inhibit-read-only t)
         (sorted-mailboxes (mail-app--sort-mailboxes mailboxes)))
     (erase-buffer)
+    (insert (propertize (format "Mail.app Mailboxes: %s\n"
+                                (or mail-app-current-account "All Accounts"))
+                        'face 'bold))
+    (insert "\n")
+    (insert "Commands: [RET] view messages  [s] search  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-50s %8s %8s\n"
                     "ACCOUNT" "MAILBOX" "UNREAD" "TOTAL"))
     (insert (make-string 100 ?-) "\n")
@@ -332,12 +340,21 @@ If nil, you will be prompted to select one when needed."
         (when (> unread 0)
           (put-text-property start (point) 'face 'bold))))
     (goto-char (point-min))
-    (forward-line 2)))
+    (forward-line 5)))  ; Skip title, blank line, commands, blank line, header
 
 (defun mail-app--format-messages (messages)
   "Format MESSAGES for display."
   (let ((inhibit-read-only t))
     (erase-buffer)
+    (insert (propertize (format "Mail.app Messages: %s/%s\n"
+                                mail-app-current-account
+                                mail-app-current-mailbox)
+                        'face 'bold))
+    (insert "\n")
+    (insert "Commands: [RET] read  [f] flag  [d] delete  [a] archive  [t] toggle read/unread\n")
+    (insert "          [s] search  [u] unread filter  [g/r] refresh  [q] quit  [?] help\n")
+    (insert "Marking:  [m] mark  [M] unmark  [U] unmark-all  [x] delete marked\n")
+    (insert "          [%a] archive marked  [%f] flag marked  [%r] read  [%u] unread\n\n")
     (insert (format "%-2s %-4s %-35s %-58s %-30s\n"
                     "" "FLAG" "FROM" "SUBJECT" "DATE"))
     (insert (make-string 135 ?-) "\n")
@@ -368,7 +385,7 @@ If nil, you will be prompted to select one when needed."
         (unless read
           (put-text-property start (point) 'face 'bold))))
     (goto-char (point-min))
-    (forward-line 2)))
+    (forward-line 8)))  ; Skip title, blank, command lines (4), blank, header
 
 (defun mail-app--format-message-view (message-id account mailbox)
   "Format full message view for MESSAGE-ID in ACCOUNT and MAILBOX."
