@@ -93,8 +93,17 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "f") 'mail-app-flag-message-at-point)
     (define-key map (kbd "d") 'mail-app-delete-message-at-point)
     (define-key map (kbd "a") 'mail-app-archive-message-at-point)
-    (define-key map (kbd "m") 'mail-app-mark-message-at-point)
+    (define-key map (kbd "t") 'mail-app-mark-message-at-point)
     (define-key map (kbd "u") 'mail-app-show-unread)
+    ;; Marking for bulk operations
+    (define-key map (kbd "m") 'mail-app-toggle-mark-at-point)
+    (define-key map (kbd "M") 'mail-app-unmark-at-point)
+    (define-key map (kbd "U") 'mail-app-unmark-all)
+    (define-key map (kbd "x") 'mail-app-delete-marked)
+    (define-key map (kbd "%a") 'mail-app-archive-marked)
+    (define-key map (kbd "%f") 'mail-app-flag-marked)
+    (define-key map (kbd "%r") 'mail-app-mark-marked-as-read)
+    (define-key map (kbd "%u") 'mail-app-mark-marked-as-unread)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
     map)
@@ -135,6 +144,9 @@ If nil, you will be prompted to select one when needed."
 
 (defvar-local mail-app-show-only-unread nil
   "If non-nil, show only unread messages.")
+
+(defvar-local mail-app-marked-messages nil
+  "List of marked message IDs for bulk operations.")
 
 ;;; Utility functions
 
@@ -326,8 +338,8 @@ If nil, you will be prompted to select one when needed."
   "Format MESSAGES for display."
   (let ((inhibit-read-only t))
     (erase-buffer)
-    (insert (format "%-4s %-35s %-60s %-30s\n"
-                    "FLAG" "FROM" "SUBJECT" "DATE"))
+    (insert (format "%-2s %-4s %-35s %-58s %-30s\n"
+                    "" "FLAG" "FROM" "SUBJECT" "DATE"))
     (insert (make-string 135 ?-) "\n")
     (dolist (message messages)
       (let* ((id (plist-get message :id))
@@ -336,13 +348,17 @@ If nil, you will be prompted to select one when needed."
              (from (plist-get message :from))
              (subject (plist-get message :subject))
              (date (plist-get message :date))
+             (marked (member id mail-app-marked-messages))
+             (mark-str (if marked "*" " "))
              (flag-str (concat (if read "✓" " ") (if flagged "⚑" " ")))
-             (line (format "%-4s %-35s %-60s %-30s\n"
+             (line (format "%-2s %-4s %-35s %-58s %-30s\n"
+                           mark-str
                            flag-str
                            (truncate-string-to-width from 35 nil nil "...")
-                           (truncate-string-to-width subject 60 nil nil "...")
+                           (truncate-string-to-width subject 58 nil nil "...")
                            (truncate-string-to-width date 30 nil nil "...")))
-             (speech-text (format "%s%s from %s, %s"
+             (speech-text (format "%s%s%s from %s, %s"
+                                  (if marked "Marked. " "")
                                   (if flagged "Flagged message: " "")
                                   subject from date))
              (start (point)))
@@ -607,6 +623,157 @@ If nil, you will be prompted to select one when needed."
                            "--read" "false")
     (message "Message marked as unread")))
 
+;;; Marking and bulk operations
+
+(defun mail-app-toggle-mark-at-point ()
+  "Toggle mark on the message at point for bulk operations."
+  (interactive)
+  (when-let* ((message (mail-app--get-message-at-point))
+              (id (plist-get message :id)))
+    (if (member id mail-app-marked-messages)
+        ;; Unmark
+        (progn
+          (setq mail-app-marked-messages (delete id mail-app-marked-messages))
+          (message "Unmarked")
+          (forward-line 1))
+      ;; Mark
+      (progn
+        (push id mail-app-marked-messages)
+        (message "Marked")
+        (forward-line 1)))
+    (mail-app-refresh)))
+
+(defun mail-app-unmark-at-point ()
+  "Unmark the message at point."
+  (interactive)
+  (when-let* ((message (mail-app--get-message-at-point))
+              (id (plist-get message :id)))
+    (setq mail-app-marked-messages (delete id mail-app-marked-messages))
+    (message "Unmarked")
+    (forward-line 1)
+    (mail-app-refresh)))
+
+(defun mail-app-unmark-all ()
+  "Unmark all marked messages."
+  (interactive)
+  (setq mail-app-marked-messages nil)
+  (message "All unmarked")
+  (mail-app-refresh))
+
+(defun mail-app-delete-marked ()
+  "Delete all marked messages."
+  (interactive)
+  (if (null mail-app-marked-messages)
+      (message "No messages marked")
+    (when (yes-or-no-p (format "Delete %d marked messages? " (length mail-app-marked-messages)))
+      (let ((count 0)
+            (errors 0))
+        (dolist (id mail-app-marked-messages)
+          (condition-case err
+              (progn
+                (mail-app--run-command "messages" "delete" id
+                                       "-a" mail-app-current-account
+                                       "-m" mail-app-current-mailbox)
+                (setq count (1+ count)))
+            (error
+             (setq errors (1+ errors))
+             (message "Error deleting message %s: %s" id (error-message-string err)))))
+        (setq mail-app-marked-messages nil)
+        (message "Deleted %d messages%s" count
+                 (if (> errors 0) (format ", %d errors" errors) ""))
+        (mail-app-refresh)))))
+
+(defun mail-app-archive-marked ()
+  "Archive all marked messages."
+  (interactive)
+  (if (null mail-app-marked-messages)
+      (message "No messages marked")
+    (let ((count 0)
+          (errors 0))
+      (dolist (id mail-app-marked-messages)
+        (condition-case err
+            (progn
+              (mail-app--run-command "messages" "archive" id
+                                     "-a" mail-app-current-account
+                                     "-m" mail-app-current-mailbox)
+              (setq count (1+ count)))
+          (error
+           (setq errors (1+ errors))
+           (message "Error archiving message %s: %s" id (error-message-string err)))))
+      (setq mail-app-marked-messages nil)
+      (message "Archived %d messages%s" count
+               (if (> errors 0) (format ", %d errors" errors) ""))
+      (mail-app-refresh))))
+
+(defun mail-app-flag-marked ()
+  "Flag all marked messages."
+  (interactive)
+  (if (null mail-app-marked-messages)
+      (message "No messages marked")
+    (let ((count 0)
+          (errors 0))
+      (dolist (id mail-app-marked-messages)
+        (condition-case err
+            (progn
+              (mail-app--run-command "messages" "flag" id
+                                     "-a" mail-app-current-account
+                                     "-m" mail-app-current-mailbox
+                                     "--flagged" "true")
+              (setq count (1+ count)))
+          (error
+           (setq errors (1+ errors))
+           (message "Error flagging message %s: %s" id (error-message-string err)))))
+      (setq mail-app-marked-messages nil)
+      (message "Flagged %d messages%s" count
+               (if (> errors 0) (format ", %d errors" errors) ""))
+      (mail-app-refresh))))
+
+(defun mail-app-mark-marked-as-read ()
+  "Mark all marked messages as read."
+  (interactive)
+  (if (null mail-app-marked-messages)
+      (message "No messages marked")
+    (let ((count 0)
+          (errors 0))
+      (dolist (id mail-app-marked-messages)
+        (condition-case err
+            (progn
+              (mail-app--run-command "messages" "mark" id
+                                     "-a" mail-app-current-account
+                                     "-m" mail-app-current-mailbox
+                                     "--read" "true")
+              (setq count (1+ count)))
+          (error
+           (setq errors (1+ errors))
+           (message "Error marking message %s: %s" id (error-message-string err)))))
+      (setq mail-app-marked-messages nil)
+      (message "Marked %d messages as read%s" count
+               (if (> errors 0) (format ", %d errors" errors) ""))
+      (mail-app-refresh))))
+
+(defun mail-app-mark-marked-as-unread ()
+  "Mark all marked messages as unread."
+  (interactive)
+  (if (null mail-app-marked-messages)
+      (message "No messages marked")
+    (let ((count 0)
+          (errors 0))
+      (dolist (id mail-app-marked-messages)
+        (condition-case err
+            (progn
+              (mail-app--run-command "messages" "mark" id
+                                     "-a" mail-app-current-account
+                                     "-m" mail-app-current-mailbox
+                                     "--read" "false")
+              (setq count (1+ count)))
+          (error
+           (setq errors (1+ errors))
+           (message "Error marking message %s: %s" id (error-message-string err)))))
+      (setq mail-app-marked-messages nil)
+      (message "Marked %d messages as unread%s" count
+               (if (> errors 0) (format ", %d errors" errors) ""))
+      (mail-app-refresh))))
+
 ;;; Search
 
 ;;;###autoload
@@ -702,8 +869,17 @@ If nil, you will be prompted to select one when needed."
       "f" 'mail-app-flag-message-at-point
       "d" 'mail-app-delete-message-at-point
       "a" 'mail-app-archive-message-at-point
-      "m" 'mail-app-mark-message-at-point
+      "t" 'mail-app-mark-message-at-point
       "u" 'mail-app-show-unread
+      ;; Marking for bulk operations
+      "m" 'mail-app-toggle-mark-at-point
+      "M" 'mail-app-unmark-at-point
+      "U" 'mail-app-unmark-all
+      "x" 'mail-app-delete-marked
+      "%a" 'mail-app-archive-marked
+      "%f" 'mail-app-flag-marked
+      "%r" 'mail-app-mark-marked-as-read
+      "%u" 'mail-app-mark-marked-as-unread
       "q" 'quit-window
       "ZZ" 'quit-window
       "ZQ" 'quit-window
