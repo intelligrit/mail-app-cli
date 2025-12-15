@@ -269,17 +269,16 @@ If nil, you will be prompted to select one when needed."
         (messages '()))
     ;; Skip header and separator lines
     (setq lines (cddr lines))
-    ;; Parse each line - search has different columns: ACCOUNT, MAILBOX, SUBJECT, FROM, DATE
+    ;; Parse each line - search columns: ID, ACCOUNT, MAILBOX, SUBJECT, FROM, DATE
     (dolist (line lines)
       (let ((fields (split-string line "\\s-\\s-\\s-+" t)))
-        (when (>= (length fields) 5)
-          (let* ((account (string-trim (nth 0 fields)))
-                 (mailbox (string-trim (nth 1 fields)))
-                 (subject (string-trim (nth 2 fields)))
-                 (from (string-trim (nth 3 fields)))
-                 (date (string-trim (nth 4 fields)))
-                 ;; Generate a pseudo-ID from account/mailbox/subject for uniqueness
-                 (id (format "%s-%s-%s" account mailbox (substring subject 0 (min 20 (length subject))))))
+        (when (>= (length fields) 6)
+          (let* ((id (string-trim (nth 0 fields)))
+                 (account (string-trim (nth 1 fields)))
+                 (mailbox (string-trim (nth 2 fields)))
+                 (subject (string-trim (nth 3 fields)))
+                 (from (string-trim (nth 4 fields)))
+                 (date (string-trim (nth 5 fields))))
             (push (list :id id
                         :account account
                         :mailbox mailbox
