@@ -124,6 +124,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "p") 'previous-line)
     (define-key map (kbd "r") 'mail-app-reply-current-message)
     (define-key map (kbd "R") 'mail-app-reply-all-current-message)
+    (define-key map (kbd "v") 'mail-app-cycle-view)
     (define-key map (kbd "f") 'mail-app-flag-current-message)
     (define-key map (kbd "d") 'mail-app-delete-current-message)
     (define-key map (kbd "a") 'mail-app-archive-current-message)
@@ -163,6 +164,9 @@ If nil, you will be prompted to select one when needed."
 
 (defvar-local mail-app-current-offset 0
   "Current pagination offset for messages.")
+
+(defvar-local mail-app-current-view-mode 'plain
+  "Current view mode for message: 'plain (content only), 'full (with headers), or 'attachments.")
 
 ;;; Utility functions
 
@@ -303,7 +307,8 @@ Optionally play audio ICON."
     (erase-buffer)
     (insert (propertize "Mail.app Accounts\n" 'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] view mailboxes  [c] compose  [s] search  [S] search all  [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert "Commands: [RET] mailboxes  [c] compose  [s] search  [S] search all\n")
+    (insert "          [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-40s %-10s\n"
                     "ACCOUNT" "EMAIL" "ENABLED"))
     (insert (make-string 85 ?-) "\n")
@@ -322,7 +327,7 @@ Optionally play audio ICON."
         (when enabled
           (put-text-property start (point) 'face 'default))))
     (goto-char (point-min))
-    (forward-line 5)))  ; Skip title, blank line, commands, blank line, header
+    (forward-line 6)))  ; Skip title, blank, commands (2 lines), blank, header
 
 (defun mail-app--sort-mailboxes (mailboxes)
   "Sort MAILBOXES with INBOX first, then alphabetically by name."
@@ -346,7 +351,8 @@ Optionally play audio ICON."
                                 (or mail-app-current-account "All Accounts"))
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] view messages  [c] compose  [s] search  [S] search all  [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert "Commands: [RET] messages  [c] compose  [s] search  [S] search all\n")
+    (insert "          [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-50s %8s %8s\n"
                     "ACCOUNT" "MAILBOX" "UNREAD" "TOTAL"))
     (insert (make-string 100 ?-) "\n")
@@ -366,7 +372,7 @@ Optionally play audio ICON."
         (when (> unread 0)
           (put-text-property start (point) 'face 'bold))))
     (goto-char (point-min))
-    (forward-line 5)))  ; Skip title, blank line, commands, blank line, header
+    (forward-line 6)))  ; Skip title, blank, commands (2 lines), blank, header
 
 (defun mail-app--format-messages (messages)
   "Format MESSAGES for display."
@@ -377,10 +383,11 @@ Optionally play audio ICON."
                                 mail-app-current-mailbox)
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] read  [c] compose  [f] flag  [d] delete  [a] archive  [t] toggle read/unread\n")
-    (insert "          [s] search here  [S] search all  [u] unread filter  [N] load more  [g/r] refresh  [q] quit  [?] help\n")
+    (insert "Commands: [RET] read  [c] compose  [f] flag  [d] delete  [a] archive\n")
+    (insert "          [t] toggle read  [s] search  [S] search all  [u] unread\n")
+    (insert "          [N] load more  [g/r] refresh  [q] quit  [?] help\n")
     (insert "Marking:  [m] mark  [M] unmark  [U] unmark-all  [x] delete marked\n")
-    (insert "          [,a] archive marked  [,f] flag marked  [,r] read  [,u] unread\n\n")
+    (insert "          [,a] archive  [,f] flag  [,r] read  [,u] unread\n\n")
     (insert (format "%-2s %-4s %-35s %-58s %-30s\n"
                     "" "FLAG" "FROM" "SUBJECT" "DATE"))
     (insert (make-string 135 ?-) "\n")
@@ -411,22 +418,38 @@ Optionally play audio ICON."
         (unless read
           (put-text-property start (point) 'face 'bold))))
     (goto-char (point-min))
-    (forward-line 8)))  ; Skip title, blank, command lines (4), blank, header
+    (forward-line 9)))  ; Skip title, blank, command lines (5), blank, header
 
 (defun mail-app--format-message-view (message-id account mailbox)
-  "Format full message view for MESSAGE-ID in ACCOUNT and MAILBOX."
+  "Format message view for MESSAGE-ID in ACCOUNT and MAILBOX based on view mode."
   (let* ((output (mail-app--run-command "messages" "show" message-id
                                          "-a" account "-m" mailbox))
-         (inhibit-read-only t))
+         (inhibit-read-only t)
+         (view-mode (or mail-app-current-view-mode 'plain)))
     (erase-buffer)
-    (insert (propertize (format "Mail.app Message: %s/%s\n" account mailbox) 'face 'bold))
+    (insert (propertize (format "Mail.app Message [%s view]: %s/%s\n"
+                                (symbol-name view-mode) account mailbox)
+                        'face 'bold))
     (insert "\n")
-    (insert "Commands: [r] reply  [R] reply-all  [c] compose  [f] flag  [d] delete  [a] archive\n")
-    (insert "          [t] mark unread  [g] refresh  [q] quit  [?] help\n\n")
+    (insert "Commands: [r] reply  [R] reply-all  [v] cycle view  [c] compose\n")
+    (insert "          [f] flag  [d] delete  [a] archive  [t] unread\n")
+    (insert "          [g] refresh  [q] quit  [?] help\n\n")
     (insert (make-string 80 ?=) "\n\n")
-    (insert output)
+    (cond
+     ((eq view-mode 'plain)
+      ;; Show only content (after "--- Content ---")
+      (when (string-match "^--- Content ---\\s-*\n\\(\\(.\\|\n\\)*\\)" output)
+        (insert (match-string 1 output))))
+     ((eq view-mode 'full)
+      ;; Show full message with headers
+      (insert output))
+     ((eq view-mode 'attachments)
+      ;; Show attachment list
+      (let ((attach-output (mail-app--run-command "attachments" "list" message-id
+                                                   "-a" account "-m" mailbox)))
+        (insert attach-output))))
     (goto-char (point-min))
-    (forward-line 6)))
+    (forward-line 7)))
 
 ;;; Interactive commands - Accounts
 
@@ -597,8 +620,27 @@ Optionally play audio ICON."
       (setq mail-app-current-message-id message-id)
       (setq mail-app-current-account account)
       (setq mail-app-current-mailbox mailbox)
+      (setq mail-app-current-view-mode 'plain)
       (mail-app--format-message-view message-id account mailbox))
     (switch-to-buffer buf)))
+
+(defun mail-app-cycle-view ()
+  "Cycle through message view modes: plain, full, attachments."
+  (interactive)
+  (unless mail-app-current-message-id
+    (error "No message loaded"))
+  (let* ((current (or mail-app-current-view-mode 'plain))
+         (next (cond
+                ((eq current 'plain) 'full)
+                ((eq current 'full) 'attachments)
+                ((eq current 'attachments) 'plain)
+                (t 'plain))))
+    (setq mail-app-current-view-mode next)
+    (mail-app--speak (format "Switching to %s view" (symbol-name next)) 'select-object)
+    (mail-app--format-message-view mail-app-current-message-id
+                                    mail-app-current-account
+                                    mail-app-current-mailbox)
+    (mail-app--speak (format "%s view loaded" (symbol-name next)) 'task-done)))
 
 (defun mail-app-show-unread ()
   "Toggle showing only unread messages."
@@ -617,14 +659,19 @@ Optionally play audio ICON."
         (message "No message at point")
       (let* ((id (plist-get message :id))
              (flagged (plist-get message :flagged))
-             (new-state (not flagged)))
+             (new-state (not flagged))
+             (buf (current-buffer)))
         (mail-app--speak (if new-state "Flagging message" "Unflagging message") 'select-object)
-        (mail-app--run-command "messages" "flag" id
-                               "-a" mail-app-current-account
-                               "-m" mail-app-current-mailbox
-                               "--flagged" (if new-state "true" "false"))
-        (mail-app--speak "Done" 'task-done)
-        (mail-app-refresh)))))
+        (mail-app--run-command-async
+         (lambda (output)
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (mail-app--speak (if new-state "Flagged" "Unflagged") 'task-done)
+               (mail-app-refresh))))
+         "messages" "flag" id
+         "-a" mail-app-current-account
+         "-m" mail-app-current-mailbox
+         "--flagged" (if new-state "true" "false"))))))
 
 (defun mail-app-delete-message-at-point ()
   "Delete message at point."
@@ -634,12 +681,17 @@ Optionally play audio ICON."
         (message "No message at point")
       (when (yes-or-no-p "Delete this message? ")
         (mail-app--speak "Deleting message" 'delete-object)
-        (let ((id (plist-get message :id)))
-          (mail-app--run-command "messages" "delete" id
-                                 "-a" mail-app-current-account
-                                 "-m" mail-app-current-mailbox)
-          (mail-app--speak "Done" 'task-done)
-          (mail-app-refresh))))))
+        (let ((id (plist-get message :id))
+              (buf (current-buffer)))
+          (mail-app--run-command-async
+           (lambda (output)
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (mail-app--speak "Deleted" 'task-done)
+                 (mail-app-refresh))))
+           "messages" "delete" id
+           "-a" mail-app-current-account
+           "-m" mail-app-current-mailbox))))))
 
 (defun mail-app-archive-message-at-point ()
   "Archive message at point."
@@ -648,12 +700,17 @@ Optionally play audio ICON."
     (if (not message)
         (message "No message at point")
       (mail-app--speak "Archiving message" 'select-object)
-      (let ((id (plist-get message :id)))
-        (mail-app--run-command "messages" "archive" id
-                               "-a" mail-app-current-account
-                               "-m" mail-app-current-mailbox)
-        (mail-app--speak "Done" 'task-done)
-        (mail-app-refresh)))))
+      (let ((id (plist-get message :id))
+            (buf (current-buffer)))
+        (mail-app--run-command-async
+         (lambda (output)
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (mail-app--speak "Archived" 'task-done)
+               (mail-app-refresh))))
+         "messages" "archive" id
+         "-a" mail-app-current-account
+         "-m" mail-app-current-mailbox)))))
 
 (defun mail-app-mark-message-at-point ()
   "Toggle read status of message at point."
@@ -663,14 +720,19 @@ Optionally play audio ICON."
         (message "No message at point")
       (let* ((id (plist-get message :id))
              (read (plist-get message :read))
-             (new-state (not read)))
+             (new-state (not read))
+             (buf (current-buffer)))
         (mail-app--speak (format "Marking as %s" (if new-state "read" "unread")) 'select-object)
-        (mail-app--run-command "messages" "mark" id
-                               "-a" mail-app-current-account
-                               "-m" mail-app-current-mailbox
-                               "--read" (if new-state "true" "false"))
-        (mail-app--speak "Done" 'task-done)
-        (mail-app-refresh)))))
+        (mail-app--run-command-async
+         (lambda (output)
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (mail-app--speak (format "Marked as %s" (if new-state "read" "unread")) 'task-done)
+               (mail-app-refresh))))
+         "messages" "mark" id
+         "-a" mail-app-current-account
+         "-m" mail-app-current-mailbox
+         "--read" (if new-state "true" "false"))))))
 
 (defun mail-app-flag-current-message ()
   "Toggle flag on current message in message view."
@@ -1240,6 +1302,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
     (evil-define-key 'normal mail-app-message-view-mode-map
       "r" 'mail-app-reply-current-message
       "R" 'mail-app-reply-all-current-message
+      "v" 'mail-app-cycle-view
       "c" 'mail-app-compose
       "f" 'mail-app-flag-current-message
       "d" 'mail-app-delete-current-message
