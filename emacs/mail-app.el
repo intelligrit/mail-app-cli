@@ -30,6 +30,8 @@
 ;;; Code:
 
 (require 'seq)
+(require 'message)
+(require 'sendmail)
 
 ;;; Customization
 
@@ -54,6 +56,12 @@ If nil, you will be prompted to select one when needed."
   :type 'integer
   :group 'mail-app)
 
+(defcustom mail-app-use-emacs-compose t
+  "If non-nil, use Emacs compose-mail for composing messages.
+If nil, open Mail.app for composing."
+  :type 'boolean
+  :group 'mail-app)
+
 ;;; Keymaps
 
 (defvar mail-app-accounts-mode-map
@@ -64,6 +72,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "g") 'mail-app-refresh)
     (define-key map (kbd "r") 'mail-app-refresh)
     (define-key map (kbd "s") 'mail-app-search)
+    (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
     map)
@@ -77,6 +86,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "g") 'mail-app-refresh)
     (define-key map (kbd "r") 'mail-app-refresh)
     (define-key map (kbd "s") 'mail-app-search)
+    (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
     map)
@@ -95,6 +105,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "a") 'mail-app-archive-message-at-point)
     (define-key map (kbd "t") 'mail-app-mark-message-at-point)
     (define-key map (kbd "u") 'mail-app-show-unread)
+    (define-key map (kbd "c") 'mail-app-compose)
     ;; Marking for bulk operations
     (define-key map (kbd "m") 'mail-app-toggle-mark-at-point)
     (define-key map (kbd "M") 'mail-app-unmark-at-point)
@@ -119,6 +130,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "d") 'mail-app-delete-current-message)
     (define-key map (kbd "a") 'mail-app-archive-current-message)
     (define-key map (kbd "t") 'mail-app-mark-current-message)
+    (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "g") 'mail-app-refresh)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
@@ -280,7 +292,7 @@ If nil, you will be prompted to select one when needed."
     (erase-buffer)
     (insert (propertize "Mail.app Accounts\n" 'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] view mailboxes  [s] search  [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert "Commands: [RET] view mailboxes  [c] compose  [s] search  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-40s %-10s\n"
                     "ACCOUNT" "EMAIL" "ENABLED"))
     (insert (make-string 85 ?-) "\n")
@@ -323,7 +335,7 @@ If nil, you will be prompted to select one when needed."
                                 (or mail-app-current-account "All Accounts"))
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] view messages  [s] search  [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert "Commands: [RET] view messages  [c] compose  [s] search  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-50s %8s %8s\n"
                     "ACCOUNT" "MAILBOX" "UNREAD" "TOTAL"))
     (insert (make-string 100 ?-) "\n")
@@ -354,7 +366,7 @@ If nil, you will be prompted to select one when needed."
                                 mail-app-current-mailbox)
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] read  [f] flag  [d] delete  [a] archive  [t] toggle read/unread\n")
+    (insert "Commands: [RET] read  [c] compose  [f] flag  [d] delete  [a] archive  [t] toggle read/unread\n")
     (insert "          [s] search  [u] unread filter  [g/r] refresh  [q] quit  [?] help\n")
     (insert "Marking:  [m] mark  [M] unmark  [U] unmark-all  [x] delete marked\n")
     (insert "          [,a] archive marked  [,f] flag marked  [,r] read  [,u] unread\n\n")
@@ -398,7 +410,7 @@ If nil, you will be prompted to select one when needed."
     (erase-buffer)
     (insert (propertize (format "Mail.app Message: %s/%s\n" account mailbox) 'face 'bold))
     (insert "\n")
-    (insert "Commands: [r] reply  [R] reply-all  [f] flag  [d] delete  [a] archive\n")
+    (insert "Commands: [r] reply  [R] reply-all  [c] compose  [f] flag  [d] delete  [a] archive\n")
     (insert "          [t] mark unread  [g] refresh  [q] quit  [?] help\n\n")
     (insert (make-string 80 ?=) "\n\n")
     (insert output)
@@ -649,21 +661,174 @@ If nil, you will be prompted to select one when needed."
                            "--read" "false")
     (message "Message marked as unread")))
 
+(defun mail-app--parse-message-headers (output)
+  "Parse message headers from OUTPUT and return plist."
+  (let ((headers '()))
+    (with-temp-buffer
+      (insert output)
+      (goto-char (point-min))
+      (when (re-search-forward "^Subject:\\s-*\\(.+\\)$" nil t)
+        (setq headers (plist-put headers :subject (match-string 1))))
+      (goto-char (point-min))
+      (when (re-search-forward "^From:\\s-*\\(.+\\)$" nil t)
+        (setq headers (plist-put headers :from (match-string 1))))
+      (goto-char (point-min))
+      (when (re-search-forward "^To:\\s-*\\[\\(.+\\)\\]" nil t)
+        (setq headers (plist-put headers :to (match-string 1))))
+      (goto-char (point-min))
+      (when (re-search-forward "^Cc:\\s-*\\[\\(.+\\)\\]" nil t)
+        (setq headers (plist-put headers :cc (match-string 1))))
+      (goto-char (point-min))
+      (when (re-search-forward "^--- Content ---\\s-*\\(.+\\)" nil t)
+        (setq headers (plist-put headers :body (buffer-substring (point) (point-max))))))
+    headers))
+
 (defun mail-app-reply-current-message ()
   "Reply to current message."
   (interactive)
   (when mail-app-current-message-id
-    (let ((url (format "message://%3c%s%3e" mail-app-current-message-id)))
-      (browse-url url)
-      (message "Opening message in Mail.app to reply..."))))
+    (let* ((output (mail-app--run-command "messages" "show" mail-app-current-message-id
+                                          "-a" mail-app-current-account
+                                          "-m" mail-app-current-mailbox))
+           (headers (mail-app--parse-message-headers output))
+           (from (plist-get headers :from))
+           (subject (plist-get headers :subject))
+           (body (plist-get headers :body))
+           (reply-subject (if (string-prefix-p "Re: " subject)
+                              subject
+                            (concat "Re: " subject))))
+      (setq message-options `((account . ,mail-app-current-account)))
+      (compose-mail from
+                    reply-subject
+                    nil nil nil
+                    `((account . ,mail-app-current-account)))
+      ;; Set From header based on account
+      (message-goto-from)
+      (message-beginning-of-line)
+      (kill-line)
+      (insert (format "From: %s" mail-app-current-account))
+      (when body
+        (goto-char (point-max))
+        (insert "\n\n")
+        (insert (replace-regexp-in-string "^" "> " body)))
+      (message-goto-body)
+      (message "Composing reply..."))))
 
 (defun mail-app-reply-all-current-message ()
   "Reply to all on current message."
   (interactive)
   (when mail-app-current-message-id
-    (let ((url (format "message://%3c%s%3e" mail-app-current-message-id)))
-      (browse-url url)
-      (message "Opening message in Mail.app to reply all..."))))
+    (let* ((output (mail-app--run-command "messages" "show" mail-app-current-message-id
+                                          "-a" mail-app-current-account
+                                          "-m" mail-app-current-mailbox))
+           (headers (mail-app--parse-message-headers output))
+           (from (plist-get headers :from))
+           (to (plist-get headers :to))
+           (cc (plist-get headers :cc))
+           (subject (plist-get headers :subject))
+           (body (plist-get headers :body))
+           (reply-subject (if (string-prefix-p "Re: " subject)
+                              subject
+                            (concat "Re: " subject)))
+           (all-recipients (string-join (delq nil (list from to cc)) ", ")))
+      (setq message-options `((account . ,mail-app-current-account)))
+      (compose-mail all-recipients
+                    reply-subject
+                    nil nil nil
+                    `((account . ,mail-app-current-account)))
+      ;; Set From header based on account
+      (message-goto-from)
+      (message-beginning-of-line)
+      (kill-line)
+      (insert (format "From: %s" mail-app-current-account))
+      (when body
+        (goto-char (point-max))
+        (insert "\n\n")
+        (insert (replace-regexp-in-string "^" "> " body)))
+      (message-goto-body)
+      (message "Composing reply to all..."))))
+
+(defun mail-app-send-message ()
+  "Send the current message using mail-app-cli."
+  (interactive)
+  (save-excursion
+    (goto-char (point-min))
+    (let* ((to (mail-fetch-field "To"))
+           (cc (mail-fetch-field "Cc"))
+           (bcc (mail-fetch-field "Bcc"))
+           (subject (mail-fetch-field "Subject"))
+           (from (mail-fetch-field "From"))
+           ;; Extract account from message-options or From header
+           (account (or (when (boundp 'message-options)
+                          (cdr (assq 'account message-options)))
+                       (when from
+                         ;; Try to match From email to account
+                         (let ((email (if (string-match "<\\(.+\\)>" from)
+                                          (match-string 1 from)
+                                        from)))
+                           ;; Use the email as account identifier
+                           email))
+                       mail-app-current-account
+                       mail-app-default-account
+                       (read-string "Account: ")))
+           (body-start (save-excursion
+                         (goto-char (point-min))
+                         (search-forward mail-header-separator nil t)
+                         (forward-line 1)
+                         (point)))
+           (body (buffer-substring-no-properties body-start (point-max))))
+      (unless to
+        (error "No recipients specified"))
+      (unless subject
+        (error "No subject specified"))
+      (unless account
+        (error "No account specified"))
+      (let ((args (list "send" "-a" account "-s" subject "--body" body)))
+        ;; Add To recipients
+        (dolist (recipient (split-string to "," t "\\s-+"))
+          (setq args (append args (list "-t" (string-trim recipient)))))
+        ;; Add Cc recipients if present
+        (when cc
+          (dolist (recipient (split-string cc "," t "\\s-+"))
+            (setq args (append args (list "-c" (string-trim recipient))))))
+        ;; Add Bcc recipients if present
+        (when bcc
+          (dolist (recipient (split-string bcc "," t "\\s-+"))
+            (setq args (append args (list "-b" (string-trim recipient))))))
+        (apply 'mail-app--run-command args)
+        (message "Message sent via %s" account)
+        (kill-buffer)))))
+
+;; Hook into message-mode's send mechanism
+(with-eval-after-load 'message
+  (defun mail-app--message-send-hook ()
+    "Hook to send message via mail-app-cli when using message-mode."
+    (when (and (boundp 'mail-app-use-emacs-compose)
+               mail-app-use-emacs-compose
+               (or (and (boundp 'message-options)
+                        (assq 'account message-options))
+                   mail-app-current-account))
+      (mail-app-send-message)
+      t))  ; Return t to prevent normal sending
+
+  (add-hook 'message-send-hook 'mail-app--message-send-hook))
+
+;;;###autoload
+(defun mail-app-compose ()
+  "Compose a new email message."
+  (interactive)
+  (let ((account (or mail-app-current-account
+                     mail-app-default-account
+                     (read-string "Account: "))))
+    (setq message-options `((account . ,account)))
+    (compose-mail nil nil nil nil nil `((account . ,account)))
+    ;; Set From header based on account
+    (message-goto-from)
+    (message-beginning-of-line)
+    (kill-line)
+    (insert (format "From: %s" account))
+    (message-goto-to)
+    (message "Composing new message...")))
 
 ;;; Marking and bulk operations
 
@@ -894,6 +1059,7 @@ If nil, you will be prompted to select one when needed."
   (when (fboundp 'evil-define-key)
     (evil-define-key 'normal mail-app-accounts-mode-map
       (kbd "RET") 'mail-app-view-mailboxes-at-point
+      "c" 'mail-app-compose
       "g" nil
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
@@ -905,6 +1071,7 @@ If nil, you will be prompted to select one when needed."
 
     (evil-define-key 'normal mail-app-mailboxes-mode-map
       (kbd "RET") 'mail-app-view-messages-at-point
+      "c" 'mail-app-compose
       "g" nil
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
@@ -916,6 +1083,7 @@ If nil, you will be prompted to select one when needed."
 
     (evil-define-key 'normal mail-app-messages-mode-map
       (kbd "RET") 'mail-app-view-message-at-point
+      "c" 'mail-app-compose
       "g" nil
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
@@ -942,6 +1110,7 @@ If nil, you will be prompted to select one when needed."
     (evil-define-key 'normal mail-app-message-view-mode-map
       "r" 'mail-app-reply-current-message
       "R" 'mail-app-reply-all-current-message
+      "c" 'mail-app-compose
       "f" 'mail-app-flag-current-message
       "d" 'mail-app-delete-current-message
       "a" 'mail-app-archive-current-message
