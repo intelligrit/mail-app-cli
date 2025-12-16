@@ -32,6 +32,7 @@
 (require 'seq)
 (require 'message)
 (require 'sendmail)
+(require 'json)
 
 ;;; Customization
 
@@ -68,6 +69,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "s") 'mail-app-search)
     (define-key map (kbd "S") 'mail-app-search-all)
     (define-key map (kbd "c") 'mail-app-compose)
+    (define-key map (kbd "J") 'mail-app-jump-to-mail-app)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
     map)
@@ -83,6 +85,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "s") 'mail-app-search)
     (define-key map (kbd "S") 'mail-app-search-all)
     (define-key map (kbd "c") 'mail-app-compose)
+    (define-key map (kbd "J") 'mail-app-jump-to-mail-app)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
     map)
@@ -103,6 +106,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "t") 'mail-app-mark-message-at-point)
     (define-key map (kbd "u") 'mail-app-show-unread)
     (define-key map (kbd "c") 'mail-app-compose)
+    (define-key map (kbd "J") 'mail-app-jump-to-mail-app)
     (define-key map (kbd "N") 'mail-app-load-more-messages)
     ;; Marking for bulk operations
     (define-key map (kbd "m") 'mail-app-toggle-mark-at-point)
@@ -124,8 +128,8 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "p") 'previous-line)
     (define-key map (kbd "r") 'mail-app-reply-current-message)
     (define-key map (kbd "R") 'mail-app-reply-all-current-message)
-    (define-key map (kbd "v") 'mail-app-cycle-view)
-    (define-key map (kbd "V") 'mail-app-cycle-view-reverse)
+    (define-key map (kbd "TAB") 'mail-app-cycle-view)
+    (define-key map (kbd "<backtab>") 'mail-app-cycle-view-reverse)
     (define-key map (kbd "f") 'mail-app-flag-current-message)
     (define-key map (kbd "d") 'mail-app-delete-current-message)
     (define-key map (kbd "a") 'mail-app-archive-current-message)
@@ -133,6 +137,7 @@ If nil, you will be prompted to select one when needed."
     (define-key map (kbd "s") 'mail-app-save-attachment-at-point)
     (define-key map (kbd "RET") 'mail-app-save-attachment-at-point)
     (define-key map (kbd "c") 'mail-app-compose)
+    (define-key map (kbd "J") 'mail-app-jump-to-mail-app)
     (define-key map (kbd "g") 'mail-app-refresh)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
@@ -173,6 +178,20 @@ If nil, you will be prompted to select one when needed."
 
 ;;; Utility functions
 
+(defun mail-app--get-account-email (account-name)
+  "Get the email address for ACCOUNT-NAME.
+Returns the email address associated with the account, or the account name if not found."
+  (condition-case err
+      (let* ((output (mail-app--run-command "accounts" "list"))
+             (accounts (mail-app--parse-accounts-output output))
+             (account (seq-find (lambda (acc)
+                                  (string= (plist-get acc :name) account-name))
+                                accounts)))
+        (if account
+            (plist-get account :email)
+          account-name))
+    (error account-name)))
+
 (defun mail-app--run-command (&rest args)
   "Run mail-app-cli command with ARGS and return output."
   (with-temp-buffer
@@ -202,96 +221,76 @@ If nil, you will be prompted to select one when needed."
              (message "Mail app command failed: %s" error-msg))))))))
 
 (defun mail-app--parse-accounts-output (output)
-  "Parse accounts list OUTPUT into a list of plists."
-  (let ((lines (split-string output "\n" t))
-        (accounts '()))
-    ;; Skip header and separator lines
-    (setq lines (cddr lines))
-    ;; Parse each line
-    (dolist (line lines)
-      (when (string-match "^\\(.+?\\)\\s-+\\(.+?\\)\\s-+\\(.+?\\)\\s-+\\(yes\\|no\\)\\s-*$" line)
-        (let ((name (string-trim (match-string 1 line)))
-              (email (string-trim (match-string 2 line)))
-              (username (string-trim (match-string 3 line)))
-              (enabled (string= "yes" (string-trim (match-string 4 line)))))
-          (push (list :name name
-                      :email email
-                      :username username
-                      :enabled enabled)
-                accounts))))
-    (nreverse accounts)))
+  "Parse accounts list OUTPUT (JSON) into a list of plists."
+  (condition-case err
+      (let* ((json-array (json-parse-string output :object-type 'alist :array-type 'list))
+             (accounts '()))
+        (dolist (acc json-array)
+          (push (list :name (alist-get 'Name acc)
+                      :email (alist-get 'EmailAddress acc)
+                      :username (alist-get 'UserName acc)
+                      :enabled (eq (alist-get 'Enabled acc) t))
+                accounts))
+        (nreverse accounts))
+    (error
+     (message "Failed to parse accounts JSON: %s\nOutput: %s" err output)
+     nil)))
 
 (defun mail-app--parse-mailboxes-output (output)
-  "Parse mailboxes list OUTPUT into a list of plists."
-  (let ((lines (split-string output "\n" t))
-        (mailboxes '()))
-    ;; Skip header and separator lines
-    (setq lines (cddr lines))
-    ;; Parse each line - match two numbers at the end, then split the rest
-    (dolist (line lines)
-      (when (string-match "^\\(.+?\\)\\s-+\\(.+?\\)\\s-+\\([0-9]+\\)\\s-+\\([0-9]+\\)\\s-*$" line)
-        (let ((account (string-trim (match-string 1 line)))
-              (name (string-trim (match-string 2 line)))
-              (unread (string-to-number (match-string 3 line)))
-              (total (string-to-number (match-string 4 line))))
-          (push (list :account account
-                      :name name
-                      :unread unread
-                      :total total)
-                mailboxes))))
-    (nreverse mailboxes)))
+  "Parse mailboxes list OUTPUT (JSON) into a list of plists."
+  (condition-case err
+      (let* ((json-array (json-parse-string output :object-type 'alist :array-type 'list))
+             (mailboxes '()))
+        (dolist (mbox json-array)
+          (push (list :account (alist-get 'Account mbox)
+                      :name (alist-get 'Name mbox)
+                      :unread (alist-get 'UnreadCount mbox)
+                      :total (alist-get 'TotalCount mbox))
+                mailboxes))
+        (nreverse mailboxes))
+    (error
+     (message "Failed to parse mailboxes JSON: %s\nOutput: %s" err output)
+     nil)))
 
 (defun mail-app--parse-messages-output (output)
-  "Parse messages list OUTPUT into a list of plists."
-  (let ((lines (split-string output "\n" t))
-        (messages '()))
-    ;; Skip header and separator lines
-    (setq lines (cddr lines))
-    ;; Parse each line - split on 3+ spaces which act as column separators
-    (dolist (line lines)
-      (let ((fields (split-string line "\\s-\\s-\\s-+" t)))
-        (when (>= (length fields) 4)
-          (let* ((id (string-trim (nth 0 fields)))
-                 (subject (string-trim (nth 1 fields)))
-                 (from (string-trim (nth 2 fields)))
-                 (date (string-trim (nth 3 fields)))
-                 (read-flag (if (>= (length fields) 5) (nth 4 fields) ""))
-                 (flagged-flag (if (>= (length fields) 6) (nth 5 fields) "")))
-            (push (list :id id
-                        :read (not (string-match-p "✓" (or read-flag "")))
-                        :flagged (string-match-p "⚑" (or flagged-flag ""))
-                        :from from
-                        :subject subject
-                        :date date)
-                  messages)))))
-    (nreverse messages)))
+  "Parse messages list OUTPUT (JSON) into a list of plists."
+  (condition-case err
+      (let* ((json-array (json-parse-string output :object-type 'alist :array-type 'list))
+             (messages '()))
+        (dolist (msg json-array)
+          (push (list :id (alist-get 'ID msg)
+                      :read (eq (alist-get 'Read msg) t)
+                      :flagged (eq (alist-get 'Flagged msg) t)
+                      :from (alist-get 'Sender msg)
+                      :subject (alist-get 'Subject msg)
+                      :date (alist-get 'DateReceived msg)
+                      :account (alist-get 'Account msg)
+                      :mailbox (alist-get 'Mailbox msg))
+                messages))
+        (nreverse messages))
+    (error
+     (message "Failed to parse messages JSON: %s\nOutput: %s" err output)
+     nil)))
 
 (defun mail-app--parse-search-output (output)
-  "Parse search results OUTPUT into a list of plists."
-  (let ((lines (split-string output "\n" t))
-        (messages '()))
-    ;; Skip header and separator lines
-    (setq lines (cddr lines))
-    ;; Parse each line - search columns: ID, ACCOUNT, MAILBOX, SUBJECT, FROM, DATE
-    (dolist (line lines)
-      (let ((fields (split-string line "\\s-\\s-\\s-+" t)))
-        (when (>= (length fields) 6)
-          (let* ((id (string-trim (nth 0 fields)))
-                 (account (string-trim (nth 1 fields)))
-                 (mailbox (string-trim (nth 2 fields)))
-                 (subject (string-trim (nth 3 fields)))
-                 (from (string-trim (nth 4 fields)))
-                 (date (string-trim (nth 5 fields))))
-            (push (list :id id
-                        :account account
-                        :mailbox mailbox
-                        :read nil  ; Search doesn't provide read status
-                        :flagged nil  ; Search doesn't provide flag status
-                        :from from
-                        :subject subject
-                        :date date)
-                  messages)))))
-    (nreverse messages)))
+  "Parse search results OUTPUT (JSON) into a list of plists."
+  (condition-case err
+      (let* ((json-array (json-parse-string output :object-type 'alist :array-type 'list))
+             (messages '()))
+        (dolist (msg json-array)
+          (push (list :id (alist-get 'ID msg)
+                      :account (alist-get 'Account msg)
+                      :mailbox (alist-get 'Mailbox msg)
+                      :read (eq (alist-get 'Read msg) t)
+                      :flagged (eq (alist-get 'Flagged msg) t)
+                      :from (alist-get 'Sender msg)
+                      :subject (alist-get 'Subject msg)
+                      :date (alist-get 'DateReceived msg))
+                messages))
+        (nreverse messages))
+    (error
+     (message "Failed to parse search JSON: %s\nOutput: %s" err output)
+     nil)))
 
 (defun mail-app--get-account-at-point ()
   "Get the account data at point."
@@ -310,23 +309,89 @@ If nil, you will be prompted to select one when needed."
   (get-text-property (point) 'mail-app-attachment-data))
 
 (defun mail-app--parse-attachments-output (output)
-  "Parse attachments list OUTPUT into a list of plists."
-  (let ((lines (split-string output "\n" t))
-        (attachments '()))
-    ;; Skip header and separator lines
-    (setq lines (cddr lines))
-    ;; Parse each line - split on 3+ spaces which act as column separators
-    (dolist (line lines)
-      (let ((fields (split-string line "\\s-\\s-\\s-+" t)))
-        (when (>= (length fields) 3)
-          (let* ((name (string-trim (nth 0 fields)))
-                 (size (string-to-number (string-trim (nth 1 fields))))
-                 (mime-type (string-trim (nth 2 fields))))
-            (push (list :name name
-                        :size size
-                        :mime-type mime-type)
-                  attachments)))))
-    (nreverse attachments)))
+  "Parse attachments list OUTPUT (JSON) into a list of plists."
+  (condition-case err
+      (let* ((json-array (json-parse-string output :object-type 'alist :array-type 'list))
+             (attachments '()))
+        (dolist (att json-array)
+          (push (list :name (alist-get 'Name att)
+                      :size (alist-get 'FileSize att)
+                      :mime-type (alist-get 'MimeType att))
+                attachments))
+        (nreverse attachments))
+    (error
+     (message "Failed to parse attachments JSON: %s\nOutput: %s" err output)
+     nil)))
+
+;;; Jump to Mail.app
+
+(defun mail-app-jump-to-mail-app ()
+  "Open Mail.app and jump to the current context (account, mailbox, or message)."
+  (interactive)
+  (cond
+   ;; In message view - open the specific message
+   ((and (eq major-mode 'mail-app-message-view-mode) mail-app-current-message-id)
+    (mail-app--speak "Opening message in Mail.app" 'open-object)
+    (let ((script (format "tell application \"Mail\"
+  activate
+  set targetAccount to account \"%s\"
+  set targetMailbox to mailbox \"%s\" of targetAccount
+  set msgs to messages of targetMailbox
+  repeat with msg in msgs
+    if id of msg as string is \"%s\" then
+      set selected messages of message viewer 1 to {msg}
+      open msg
+      exit repeat
+    end if
+  end repeat
+end tell"
+                          (replace-regexp-in-string "\"" "\\\\\"" mail-app-current-account)
+                          (replace-regexp-in-string "\"" "\\\\\"" mail-app-current-mailbox)
+                          mail-app-current-message-id)))
+      (call-process "osascript" nil nil nil "-e" script)
+      (message "Opened message in Mail.app")))
+
+   ;; In messages mode - open the mailbox
+   ((and (eq major-mode 'mail-app-messages-mode) mail-app-current-mailbox)
+    (mail-app--speak "Opening mailbox in Mail.app" 'open-object)
+    (let ((script (format "tell application \"Mail\"
+  activate
+  set targetAccount to account \"%s\"
+  set targetMailbox to mailbox \"%s\" of targetAccount
+  set selected mailboxes of message viewer 1 to {targetMailbox}
+end tell"
+                          (replace-regexp-in-string "\"" "\\\\\"" mail-app-current-account)
+                          (replace-regexp-in-string "\"" "\\\\\"" mail-app-current-mailbox))))
+      (call-process "osascript" nil nil nil "-e" script)
+      (message "Opened mailbox in Mail.app")))
+
+   ;; In mailboxes mode - open mailbox at point or just the account
+   ((eq major-mode 'mail-app-mailboxes-mode)
+    (let ((mailbox (mail-app--get-mailbox-at-point)))
+      (if mailbox
+          (let ((account (plist-get mailbox :account))
+                (name (plist-get mailbox :name)))
+            (mail-app--speak "Opening mailbox in Mail.app" 'open-object)
+            (let ((script (format "tell application \"Mail\"
+  activate
+  set targetAccount to account \"%s\"
+  set targetMailbox to mailbox \"%s\" of targetAccount
+  set selected mailboxes of message viewer 1 to {targetMailbox}
+end tell"
+                                  (replace-regexp-in-string "\"" "\\\\\"" account)
+                                  (replace-regexp-in-string "\"" "\\\\\"" name))))
+              (call-process "osascript" nil nil nil "-e" script)
+              (message "Opened mailbox in Mail.app")))
+        ;; No mailbox at point, just open Mail.app
+        (mail-app--speak "Opening Mail.app" 'open-object)
+        (call-process "osascript" nil nil nil "-e" "tell application \"Mail\" to activate")
+        (message "Opened Mail.app"))))
+
+   ;; In accounts mode or anywhere else - just open Mail.app
+   (t
+    (mail-app--speak "Opening Mail.app" 'open-object)
+    (call-process "osascript" nil nil nil "-e" "tell application \"Mail\" to activate")
+    (message "Opened Mail.app"))))
 
 ;;; Emacspeak integration
 
@@ -361,7 +426,7 @@ Optionally play audio ICON."
     (insert (propertize "Mail.app Accounts\n" 'face 'bold))
     (insert "\n")
     (insert "Commands: [RET] mailboxes  [c] compose  [s] search  [S] search all\n")
-    (insert "          [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert "          [J] jump to Mail.app  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-40s %-10s\n"
                     "ACCOUNT" "EMAIL" "ENABLED"))
     (insert (make-string 85 ?-) "\n")
@@ -405,7 +470,7 @@ Optionally play audio ICON."
                         'face 'bold))
     (insert "\n")
     (insert "Commands: [RET] messages  [c] compose  [s] search  [S] search all\n")
-    (insert "          [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert "          [J] jump to Mail.app  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-50s %8s %8s\n"
                     "ACCOUNT" "MAILBOX" "UNREAD" "TOTAL"))
     (insert (make-string 100 ?-) "\n")
@@ -440,9 +505,9 @@ Optionally play audio ICON."
     (insert "\n")
     (insert "Commands: [RET] read  [c] compose  [f] flag  [d] delete  [a] archive\n")
     (insert "          [t] toggle read  [s] search  [S] search all  [u] unread\n")
-    (insert "          [N] load more  [g/r] refresh  [q] quit  [?] help\n")
+    (insert "          [J] jump to Mail.app  [N] load more  [g/r] refresh  [q] quit\n")
     (insert "Marking:  [m] mark  [M] unmark  [U] unmark-all  [x] delete marked\n")
-    (insert "          [,a] archive  [,f] flag  [,r] read  [,u] unread\n\n")
+    (insert "          [,a] archive  [,f] flag  [,r] read  [,u] unread  [?] help\n\n")
     (if is-search
         ;; Search results: show ACCOUNT and MAILBOX columns
         (progn
@@ -509,23 +574,31 @@ Optionally play audio ICON."
   (let* ((output (mail-app--run-command "messages" "show" message-id
                                          "-a" account "-m" mailbox))
          (inhibit-read-only t)
-         (view-mode (or mail-app-current-view-mode 'plain)))
+         (view-mode (or mail-app-current-view-mode 'plain))
+         (headers (mail-app--parse-message-headers output)))
     (erase-buffer)
     (insert (propertize (format "Mail.app Message [%s view]: %s/%s\n"
                                 (symbol-name view-mode) account mailbox)
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [r] reply  [R] reply-all  [v] cycle view  [V] cycle reverse\n")
+    (insert "Commands: [r] reply  [R] reply-all  [TAB] cycle view  [S-TAB] cycle reverse\n")
     (insert "          [f] flag  [d] delete  [a] archive  [t] unread  [c] compose\n")
-    (insert "          [g] refresh  [q] quit  [?] help\n\n")
+    (insert "          [J] jump to Mail.app  [g] refresh  [q] quit  [?] help\n\n")
     (insert (make-string 80 ?=) "\n\n")
     (cond
      ((eq view-mode 'plain)
-      ;; Show only content (after "--- Content ---")
+      ;; Show basic headers and content
+      (when-let* ((from (plist-get headers :from)))
+        (insert (propertize "From: " 'face 'bold) from "\n"))
+      (when-let* ((to (plist-get headers :to)))
+        (insert (propertize "To: " 'face 'bold) to "\n"))
+      (when-let* ((subject (plist-get headers :subject)))
+        (insert (propertize "Subject: " 'face 'bold) subject "\n"))
+      (insert "\n")
       (when (string-match "^--- Content ---\\s-*\n\\(\\(.\\|\n\\)*\\)" output)
         (insert (match-string 1 output))))
      ((eq view-mode 'full)
-      ;; Show full message with headers
+      ;; Show full message with all headers
       (insert output))
      ((eq view-mode 'attachments)
       ;; Show attachment list
@@ -556,14 +629,23 @@ Optionally play audio ICON."
 (defun mail-app-list-accounts ()
   "List all Mail.app accounts."
   (interactive)
-  (let* ((output (mail-app--run-command "accounts" "list"))
-         (accounts (mail-app--parse-accounts-output output))
-         (buf (get-buffer-create "*Mail.app Accounts*")))
+  (let ((buf (get-buffer-create "*Mail.app Accounts*")))
     (with-current-buffer buf
       (mail-app-accounts-mode)
-      (setq mail-app-accounts-data accounts)
-      (mail-app--format-accounts accounts))
-    (switch-to-buffer buf)))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading accounts...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading accounts" 'select-object)
+    (mail-app--run-command-async
+     (lambda (output)
+       (let ((accounts (mail-app--parse-accounts-output output)))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq mail-app-accounts-data accounts)
+             (mail-app--format-accounts accounts)
+             (mail-app--speak (format "Loaded %d accounts" (length accounts)) 'task-done)))))
+     "accounts" "list")))
 
 (defun mail-app-view-mailboxes-at-point ()
   "View mailboxes for the account at point."
@@ -580,28 +662,46 @@ Optionally play audio ICON."
   "List mailboxes for ACCOUNT."
   (interactive
    (list (read-string "Account: " mail-app-default-account)))
-  (let* ((output (mail-app--run-command "mailboxes" "list" "-a" account))
-         (mailboxes (mail-app--parse-mailboxes-output output))
-         (buf (get-buffer-create (format "*Mail.app Mailboxes: %s*" account))))
+  (let ((buf (get-buffer-create (format "*Mail.app Mailboxes: %s*" account))))
     (with-current-buffer buf
       (mail-app-mailboxes-mode)
       (setq mail-app-current-account account)
-      (setq mail-app-mailboxes-data mailboxes)
-      (mail-app--format-mailboxes mailboxes))
-    (switch-to-buffer buf)))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Loading mailboxes for %s...\n" account))))
+    (switch-to-buffer buf)
+    (mail-app--speak (format "Loading mailboxes for %s" account) 'select-object)
+    (mail-app--run-command-async
+     (lambda (output)
+       (let ((mailboxes (mail-app--parse-mailboxes-output output)))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq mail-app-mailboxes-data mailboxes)
+             (mail-app--format-mailboxes mailboxes)
+             (mail-app--speak (format "Loaded %d mailboxes" (length mailboxes)) 'task-done)))))
+     "mailboxes" "list" "-a" account)))
 
 ;;;###autoload
 (defun mail-app-list-mailboxes ()
   "List all Mail.app mailboxes."
   (interactive)
-  (let* ((output (mail-app--run-command "mailboxes" "list"))
-         (mailboxes (mail-app--parse-mailboxes-output output))
-         (buf (get-buffer-create "*Mail.app Mailboxes*")))
+  (let ((buf (get-buffer-create "*Mail.app Mailboxes*")))
     (with-current-buffer buf
       (mail-app-mailboxes-mode)
-      (setq mail-app-mailboxes-data mailboxes)
-      (mail-app--format-mailboxes mailboxes))
-    (switch-to-buffer buf)))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading all mailboxes...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading all mailboxes" 'select-object)
+    (mail-app--run-command-async
+     (lambda (output)
+       (let ((mailboxes (mail-app--parse-mailboxes-output output)))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (setq mail-app-mailboxes-data mailboxes)
+             (mail-app--format-mailboxes mailboxes)
+             (mail-app--speak (format "Loaded %d mailboxes" (length mailboxes)) 'task-done)))))
+     "mailboxes" "list")))
 
 (defun mail-app-view-messages-at-point ()
   "View messages for the mailbox at point."
@@ -723,8 +823,46 @@ Optionally play audio ICON."
       (setq mail-app-current-account account)
       (setq mail-app-current-mailbox mailbox)
       (setq mail-app-current-view-mode 'plain)
-      (mail-app--format-message-view message-id account mailbox))
-    (switch-to-buffer buf)))
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading message...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading message" 'select-object)
+    (mail-app--run-command-async
+     (lambda (output)
+       (when (buffer-live-p buf)
+         (with-current-buffer buf
+           (let ((inhibit-read-only t)
+                 (view-mode (or mail-app-current-view-mode 'plain))
+                 (headers (mail-app--parse-message-headers output)))
+             (erase-buffer)
+             (insert (propertize (format "Mail.app Message [%s view]: %s/%s\n"
+                                        (symbol-name view-mode) account mailbox)
+                                'face 'bold))
+             (insert "\n")
+             (insert "Commands: [r] reply  [R] reply-all  [TAB] cycle view  [S-TAB] cycle reverse\n")
+             (insert "          [f] flag  [d] delete  [a] archive  [t] unread  [c] compose\n")
+             (insert "          [g] refresh  [q] quit  [?] help\n\n")
+             (insert (make-string 80 ?=) "\n\n")
+             (cond
+              ((eq view-mode 'plain)
+               (when-let* ((from (plist-get headers :from)))
+                 (insert (propertize "From: " 'face 'bold) from "\n"))
+               (when-let* ((to (plist-get headers :to)))
+                 (insert (propertize "To: " 'face 'bold) to "\n"))
+               (when-let* ((subject (plist-get headers :subject)))
+                 (insert (propertize "Subject: " 'face 'bold) subject "\n"))
+               (insert "\n")
+               (when (string-match "^--- Content ---\\s-*\n\\(\\(.\\|\n\\)*\\)" output)
+                 (insert (match-string 1 output))))
+              ((eq view-mode 'full)
+               (insert output))
+              ((eq view-mode 'attachments)
+               (insert "Loading attachments...\n")))
+             (goto-char (point-min))
+             (forward-line 7)
+             (mail-app--speak "Message loaded" 'task-done)))))
+     "messages" "show" message-id "-a" account "-m" mailbox)))
 
 (defun mail-app-cycle-view ()
   "Cycle through message view modes: plain, attachments, full."
@@ -736,13 +874,84 @@ Optionally play audio ICON."
                 ((eq current 'plain) 'attachments)
                 ((eq current 'attachments) 'full)
                 ((eq current 'full) 'plain)
-                (t 'plain))))
+                (t 'plain)))
+         (buf (current-buffer)))
     (setq mail-app-current-view-mode next)
     (mail-app--speak (format "Switching to %s view" (symbol-name next)) 'select-object)
-    (mail-app--format-message-view mail-app-current-message-id
-                                    mail-app-current-account
-                                    mail-app-current-mailbox)
-    (mail-app--speak (format "%s view loaded" (symbol-name next)) 'task-done)))
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert (format "Loading %s view...\n" (symbol-name next))))
+    (if (eq next 'attachments)
+        ;; Load attachments
+        (mail-app--run-command-async
+         (lambda (output)
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (let* ((inhibit-read-only t)
+                      (attachments (mail-app--parse-attachments-output output)))
+                 (erase-buffer)
+                 (insert (propertize (format "Mail.app Message [attachments view]: %s/%s\n"
+                                            mail-app-current-account mail-app-current-mailbox)
+                                    'face 'bold))
+                 (insert "\n")
+                 (insert "Commands: [r] reply  [R] reply-all  [TAB] cycle view  [S-TAB] cycle reverse\n")
+                 (insert "          [f] flag  [d] delete  [a] archive  [t] unread  [c] compose\n")
+                 (insert "          [J] jump to Mail.app  [g] refresh  [q] quit  [?] help\n\n")
+                 (insert (make-string 80 ?=) "\n\n")
+                 (if (null attachments)
+                     (insert "No attachments found.\n")
+                   (insert (propertize "Attachments\n\n" 'face 'bold))
+                   (insert "Commands: [RET/s] save  [q] quit\n\n")
+                   (insert (format "%-40s %-12s %-30s\n" "NAME" "SIZE" "TYPE"))
+                   (insert (make-string 80 ?-) "\n")
+                   (dolist (attachment attachments)
+                     (let* ((name (plist-get attachment :name))
+                            (size (plist-get attachment :size))
+                            (mime-type (plist-get attachment :mime-type))
+                            (line (format "%-40s %-12d %-30s\n" name size mime-type))
+                            (speech-text (format "%s, %d bytes, %s" name size mime-type)))
+                       (insert (propertize line
+                                          'mail-app-attachment-data attachment
+                                          'emacspeak-speak speech-text)))))
+                 (goto-char (point-min))
+                 (forward-line 7)
+                 (mail-app--speak "Attachments view loaded" 'task-done)))))
+         "attachments" "list" mail-app-current-message-id
+         "-a" mail-app-current-account "-m" mail-app-current-mailbox)
+      ;; Load plain or full view
+      (mail-app--run-command-async
+       (lambda (output)
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (let ((inhibit-read-only t)
+                   (headers (mail-app--parse-message-headers output)))
+               (erase-buffer)
+               (insert (propertize (format "Mail.app Message [%s view]: %s/%s\n"
+                                          (symbol-name next) mail-app-current-account mail-app-current-mailbox)
+                                  'face 'bold))
+               (insert "\n")
+               (insert "Commands: [r] reply  [R] reply-all  [TAB] cycle view  [S-TAB] cycle reverse\n")
+               (insert "          [f] flag  [d] delete  [a] archive  [t] unread  [c] compose\n")
+               (insert "          [J] jump to Mail.app  [g] refresh  [q] quit  [?] help\n\n")
+               (insert (make-string 80 ?=) "\n\n")
+               (cond
+                ((eq next 'plain)
+                 (when-let* ((from (plist-get headers :from)))
+                   (insert (propertize "From: " 'face 'bold) from "\n"))
+                 (when-let* ((to (plist-get headers :to)))
+                   (insert (propertize "To: " 'face 'bold) to "\n"))
+                 (when-let* ((subject (plist-get headers :subject)))
+                   (insert (propertize "Subject: " 'face 'bold) subject "\n"))
+                 (insert "\n")
+                 (when (string-match "^--- Content ---\\s-*\n\\(\\(.\\|\n\\)*\\)" output)
+                   (insert (match-string 1 output))))
+                ((eq next 'full)
+                 (insert output)))
+               (goto-char (point-min))
+               (forward-line 7)
+               (mail-app--speak (format "%s view loaded" (symbol-name next)) 'task-done)))))
+       "messages" "show" mail-app-current-message-id
+       "-a" mail-app-current-account "-m" mail-app-current-mailbox))))
 
 (defun mail-app-cycle-view-reverse ()
   "Cycle through message view modes in reverse: plain, full, attachments."
@@ -756,11 +965,8 @@ Optionally play audio ICON."
                 ((eq current 'attachments) 'plain)
                 (t 'plain))))
     (setq mail-app-current-view-mode next)
-    (mail-app--speak (format "Switching to %s view" (symbol-name next)) 'select-object)
-    (mail-app--format-message-view mail-app-current-message-id
-                                    mail-app-current-account
-                                    mail-app-current-mailbox)
-    (mail-app--speak (format "%s view loaded" (symbol-name next)) 'task-done)))
+    ;; Reuse the cycle-view logic
+    (mail-app-cycle-view)))
 
 (defun mail-app-show-unread ()
   "Toggle showing only unread messages."
@@ -959,17 +1165,18 @@ Optionally play audio ICON."
            (body (plist-get headers :body))
            (reply-subject (if (string-prefix-p "Re: " subject)
                               subject
-                            (concat "Re: " subject))))
+                            (concat "Re: " subject)))
+           (from-email (mail-app--get-account-email mail-app-current-account)))
       (setq message-options `((account . ,mail-app-current-account)))
       (compose-mail from
                     reply-subject
                     nil nil nil
                     `((account . ,mail-app-current-account)))
-      ;; Set From header based on account
+      ;; Set From header based on account email
       (message-goto-from)
-      (message-beginning-of-line)
+      (beginning-of-line)
       (kill-line)
-      (insert (format "From: %s" mail-app-current-account))
+      (insert (format "From: %s" from-email))
       (when body
         (goto-char (point-max))
         (insert "\n\n")
@@ -993,17 +1200,18 @@ Optionally play audio ICON."
            (reply-subject (if (string-prefix-p "Re: " subject)
                               subject
                             (concat "Re: " subject)))
-           (all-recipients (string-join (delq nil (list from to cc)) ", ")))
+           (all-recipients (string-join (delq nil (list from to cc)) ", "))
+           (from-email (mail-app--get-account-email mail-app-current-account)))
       (setq message-options `((account . ,mail-app-current-account)))
       (compose-mail all-recipients
                     reply-subject
                     nil nil nil
                     `((account . ,mail-app-current-account)))
-      ;; Set From header based on account
+      ;; Set From header based on account email
       (message-goto-from)
-      (message-beginning-of-line)
+      (beginning-of-line)
       (kill-line)
-      (insert (format "From: %s" mail-app-current-account))
+      (insert (format "From: %s" from-email))
       (when body
         (goto-char (point-max))
         (insert "\n\n")
@@ -1078,16 +1286,17 @@ Optionally play audio ICON."
 (defun mail-app-compose ()
   "Compose a new email message."
   (interactive)
-  (let ((account (or mail-app-current-account
-                     mail-app-default-account
-                     (read-string "Account: "))))
+  (let* ((account (or mail-app-current-account
+                      mail-app-default-account
+                      (read-string "Account: ")))
+         (from-email (mail-app--get-account-email account)))
     (setq message-options `((account . ,account)))
     (compose-mail nil nil nil nil nil `((account . ,account)))
-    ;; Set From header based on account
+    ;; Set From header based on account email
     (message-goto-from)
-    (message-beginning-of-line)
+    (beginning-of-line)
     (kill-line)
-    (insert (format "From: %s" account))
+    (insert (format "From: %s" from-email))
     (message-goto-to)
     (message "Composing new message...")))
 
@@ -1163,10 +1372,13 @@ Optionally play audio ICON."
             (errors 0))
         (dolist (id mail-app-marked-messages)
           (condition-case err
-              (progn
+              (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                   mail-app-messages-data))
+                     (account (or (plist-get msg :account) mail-app-current-account))
+                     (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
                 (mail-app--run-command "messages" "delete" id
-                                       "-a" mail-app-current-account
-                                       "-m" mail-app-current-mailbox)
+                                       "-a" account
+                                       "-m" mailbox)
                 (setq count (1+ count)))
             (error
              (setq errors (1+ errors))
@@ -1187,10 +1399,13 @@ Optionally play audio ICON."
           (errors 0))
       (dolist (id mail-app-marked-messages)
         (condition-case err
-            (progn
+            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                 mail-app-messages-data))
+                   (account (or (plist-get msg :account) mail-app-current-account))
+                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
               (mail-app--run-command "messages" "archive" id
-                                     "-a" mail-app-current-account
-                                     "-m" mail-app-current-mailbox)
+                                     "-a" account
+                                     "-m" mailbox)
               (setq count (1+ count)))
           (error
            (setq errors (1+ errors))
@@ -1211,10 +1426,13 @@ Optionally play audio ICON."
           (errors 0))
       (dolist (id mail-app-marked-messages)
         (condition-case err
-            (progn
+            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                 mail-app-messages-data))
+                   (account (or (plist-get msg :account) mail-app-current-account))
+                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
               (mail-app--run-command "messages" "flag" id
-                                     "-a" mail-app-current-account
-                                     "-m" mail-app-current-mailbox
+                                     "-a" account
+                                     "-m" mailbox
                                      "--flagged" "true")
               (setq count (1+ count)))
           (error
@@ -1236,10 +1454,13 @@ Optionally play audio ICON."
           (errors 0))
       (dolist (id mail-app-marked-messages)
         (condition-case err
-            (progn
+            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                 mail-app-messages-data))
+                   (account (or (plist-get msg :account) mail-app-current-account))
+                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
               (mail-app--run-command "messages" "mark" id
-                                     "-a" mail-app-current-account
-                                     "-m" mail-app-current-mailbox
+                                     "-a" account
+                                     "-m" mailbox
                                      "--read" "true")
               (setq count (1+ count)))
           (error
@@ -1261,10 +1482,13 @@ Optionally play audio ICON."
           (errors 0))
       (dolist (id mail-app-marked-messages)
         (condition-case err
-            (progn
+            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                 mail-app-messages-data))
+                   (account (or (plist-get msg :account) mail-app-current-account))
+                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
               (mail-app--run-command "messages" "mark" id
-                                     "-a" mail-app-current-account
-                                     "-m" mail-app-current-mailbox
+                                     "-a" account
+                                     "-m" mailbox
                                      "--read" "false")
               (setq count (1+ count)))
           (error
@@ -1397,6 +1621,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
     (evil-define-key 'normal mail-app-accounts-mode-map
       (kbd "RET") 'mail-app-view-mailboxes-at-point
       "c" 'mail-app-compose
+      "J" 'mail-app-jump-to-mail-app
       "g" nil
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
@@ -1410,6 +1635,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
     (evil-define-key 'normal mail-app-mailboxes-mode-map
       (kbd "RET") 'mail-app-view-messages-at-point
       "c" 'mail-app-compose
+      "J" 'mail-app-jump-to-mail-app
       "g" nil
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
@@ -1423,6 +1649,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
     (evil-define-key 'normal mail-app-messages-mode-map
       (kbd "RET") 'mail-app-view-message-at-point
       "c" 'mail-app-compose
+      "J" 'mail-app-jump-to-mail-app
       "g" nil
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
@@ -1452,9 +1679,10 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       (kbd "RET") 'mail-app-save-attachment-at-point
       "r" 'mail-app-reply-current-message
       "R" 'mail-app-reply-all-current-message
-      "v" 'mail-app-cycle-view
-      "V" 'mail-app-cycle-view-reverse
+      (kbd "TAB") 'mail-app-cycle-view
+      (kbd "<backtab>") 'mail-app-cycle-view-reverse
       "c" 'mail-app-compose
+      "J" 'mail-app-jump-to-mail-app
       "f" 'mail-app-flag-current-message
       "d" 'mail-app-delete-current-message
       "a" 'mail-app-archive-current-message
