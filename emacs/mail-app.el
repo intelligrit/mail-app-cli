@@ -31,6 +31,7 @@
 
 (require 'seq)
 (require 'message)
+(require 'mml)
 (require 'sendmail)
 (require 'json)
 
@@ -68,6 +69,22 @@ To enable by default, add to your init.el:
 
 You can also toggle it on-the-fly in message buffers with 'C' key."
   :type 'boolean
+  :group 'mail-app)
+
+(defcustom mail-app-signatures nil
+  "Alist mapping account names to signatures.
+Each element is (ACCOUNT-NAME . SIGNATURE) where SIGNATURE can be:
+  - A string containing the signature text
+  - A file path (starting with ~/ or /) to read signature from
+  - A function that returns the signature string
+
+Example:
+  (setq mail-app-signatures
+        '((\"Skyward\" . \"--\\nRobert Melton\\nSkyward IT\")
+          (\"Gmail\" . \"~/signatures/gmail.txt\")
+          (\"Fastmail\" . my-fastmail-signature-function)))"
+  :type '(alist :key-type string
+                :value-type (choice string file function))
   :group 'mail-app)
 
 ;;; Keymaps
@@ -213,6 +230,28 @@ Returns the email address associated with the account, or the account name if no
             (plist-get account :email)
           account-name))
     (error account-name)))
+
+(defun mail-app--get-signature (account-name)
+  "Get the signature for ACCOUNT-NAME.
+Returns the signature text or nil if none is configured."
+  (when-let ((sig-config (cdr (assoc account-name mail-app-signatures))))
+    (cond
+     ;; Function - call it
+     ((functionp sig-config)
+      (funcall sig-config))
+     ;; File path - read from file
+     ((and (stringp sig-config)
+           (or (string-prefix-p "~/" sig-config)
+               (string-prefix-p "/" sig-config)))
+      (condition-case nil
+          (with-temp-buffer
+            (insert-file-contents (expand-file-name sig-config))
+            (buffer-string))
+        (error nil)))
+     ;; Plain string - use as-is
+     ((stringp sig-config)
+      sig-config)
+     (t nil))))
 
 (defun mail-app--run-command (&rest args)
   "Run mail-app-cli command with ARGS and return output."
@@ -1376,6 +1415,11 @@ each message. When disabled, only subject and sender are read."
       (beginning-of-line)
       (kill-line)
       (insert (format "From: %s" from-email))
+      (message-goto-body)
+      ;; Insert signature if configured
+      (when-let ((signature (mail-app--get-signature mail-app-current-account)))
+        (insert "\n" signature "\n"))
+      ;; Insert quoted original message
       (when body
         (goto-char (point-max))
         (insert "\n\n")
@@ -1411,6 +1455,11 @@ each message. When disabled, only subject and sender are read."
       (beginning-of-line)
       (kill-line)
       (insert (format "From: %s" from-email))
+      (message-goto-body)
+      ;; Insert signature if configured
+      (when-let ((signature (mail-app--get-signature mail-app-current-account)))
+        (insert "\n" signature "\n"))
+      ;; Insert quoted original message
       (when body
         (goto-char (point-max))
         (insert "\n\n")
@@ -1441,21 +1490,44 @@ each message. When disabled, only subject and sender are read."
                        mail-app-current-account
                        mail-app-default-account
                        (read-string "Account: ")))
-           ;; Extract attachments from MML tags
+           ;; Parse MML to extract attachments and body
            (attachments '())
            (body-start (save-excursion
                          (goto-char (point-min))
                          (search-forward mail-header-separator nil t)
                          (forward-line 1)
                          (point)))
-           (body-text (buffer-substring-no-properties body-start (point-max))))
-      ;; Find MML attachment tags
-      (goto-char body-start)
-      (while (re-search-forward "<#part[^>]+filename=\"\\([^\"]+\\)\"[^>]*disposition=attachment" nil t)
-        (let ((filename (match-string 1)))
-          (push (expand-file-name filename) attachments)))
-      ;; Remove MML tags from body for plain text sending
-      (setq body-text (replace-regexp-in-string "<#/?part[^>]*>" "" body-text))
+           (mml-structure (condition-case nil
+                              (mml-parse)
+                            (error nil)))
+           (body-text ""))
+      ;; Extract attachments from MML structure
+      (when mml-structure
+        (let ((parts (if (eq (car mml-structure) 'multipart)
+                         (cddr mml-structure)
+                       (list mml-structure))))
+          (dolist (part parts)
+            (when (listp part)
+              (let ((type (cdr (assq 'type (cdr part))))
+                    (filename (cdr (assq 'filename (cdr part))))
+                    (disposition (cdr (assq 'disposition (cdr part)))))
+                (when (and filename
+                          (or (equal disposition "attachment")
+                              (not (or (equal type "text/plain")
+                                      (equal type "text/html")))))
+                  (push (expand-file-name filename) attachments))))))
+        ;; Get the text body by generating without attachments
+        (setq body-text
+              (with-temp-buffer
+                (insert (buffer-substring-no-properties body-start (point-max)))
+                ;; Remove attachment tags but keep text parts
+                (goto-char (point-min))
+                (while (re-search-forward "<#part[^>]+disposition=attachment[^>]*>.*?<#/part>" nil t)
+                  (replace-match ""))
+                (goto-char (point-min))
+                (while (re-search-forward "<#/?\\(multipart\\|part\\)[^>]*>" nil t)
+                  (replace-match ""))
+                (buffer-substring-no-properties (point-min) (point-max)))))
       (setq body-text (string-trim body-text))
 
       (unless to
@@ -1513,6 +1585,12 @@ each message. When disabled, only subject and sender are read."
     (beginning-of-line)
     (kill-line)
     (insert (format "From: %s" from-email))
+    ;; Insert signature if configured
+    (when-let ((signature (mail-app--get-signature account)))
+      (message-goto-body)
+      (goto-char (point-max))
+      (unless (bolp) (insert "\n"))
+      (insert "\n" signature))
     (message-goto-to)
     (message "Composing new message...")))
 
