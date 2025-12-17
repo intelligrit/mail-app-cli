@@ -138,7 +138,7 @@ Example:
     (define-key map (kbd "F") 'mail-app-forward-message-at-point)
     (define-key map (kbd "d") 'mail-app-delete-message-at-point)
     (define-key map (kbd "a") 'mail-app-archive-message-at-point)
-    (define-key map (kbd "j") 'mail-app-junk-message-at-point)
+    (define-key map (kbd "!") 'mail-app-junk-message-at-point)
     (define-key map (kbd "v") 'mail-app-move-message-at-point)
     (define-key map (kbd "t") 'mail-app-mark-message-at-point)
     (define-key map (kbd "u") 'mail-app-show-unread)
@@ -2229,7 +2229,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       "F" 'mail-app-forward-message-at-point
       "d" 'mail-app-delete-message-at-point
       "a" 'mail-app-archive-message-at-point
-      "j" 'mail-app-junk-message-at-point
+      "!" 'mail-app-junk-message-at-point
       "v" 'mail-app-move-message-at-point
       "t" 'mail-app-mark-message-at-point
       "u" 'mail-app-show-unread
@@ -2241,7 +2241,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       "x" 'mail-app-delete-marked
       ",a" 'mail-app-archive-marked
       ",f" 'mail-app-flag-marked
-      ",j" 'mail-app-junk-marked
+      ",!" 'mail-app-junk-marked
       ",v" 'mail-app-move-marked
       ",r" 'mail-app-mark-marked-as-read
       ",u" 'mail-app-mark-marked-as-unread
