@@ -83,8 +83,11 @@ Example:
         '((\"Skyward\" . \"--\\nRobert Melton\\nSkyward IT\")
           (\"Gmail\" . \"~/signatures/gmail.txt\")
           (\"Fastmail\" . my-fastmail-signature-function)))"
-  :type '(alist :key-type string
-                :value-type (choice string file function))
+  :type '(alist :key-type (string :tag "Account name")
+                :value-type (choice
+                             (string :tag "Signature text")
+                             (file :tag "Signature file path")
+                             (function :tag "Signature function")))
   :group 'mail-app)
 
 ;;; Keymaps
