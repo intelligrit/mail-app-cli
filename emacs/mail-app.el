@@ -53,7 +53,7 @@ If nil, you will be prompted to select one when needed."
                  (string :tag "Account name"))
   :group 'mail-app)
 
-(defcustom mail-app-message-limit 20
+(defcustom mail-app-message-limit 15
   "Default number of messages to display."
   :type 'integer
   :group 'mail-app)
