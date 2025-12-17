@@ -101,6 +101,7 @@ Example:
     (define-key map (kbd "r") 'mail-app-refresh)
     (define-key map (kbd "s") 'mail-app-search)
     (define-key map (kbd "S") 'mail-app-search-all)
+    (define-key map (kbd "o") 'mail-app-toggle-accounts-sort)
     (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "J") 'mail-app-jump-to-mail-app)
     (define-key map (kbd "q") 'quit-window)
@@ -223,6 +224,9 @@ Example:
 
 (defvar-local mail-app-message-sort-reverse nil
   "If non-nil, reverse the sort order.")
+
+(defvar-local mail-app-accounts-sort-alphabetical nil
+  "If non-nil, sort accounts alphabetically. Otherwise use natural (setup) order.")
 
 ;;; Utility functions
 
@@ -513,16 +517,23 @@ Optionally play audio ICON."
 
 (defun mail-app--format-accounts (accounts)
   "Format ACCOUNTS for display."
-  (let ((inhibit-read-only t))
+  (let ((inhibit-read-only t)
+        (sorted-accounts (if mail-app-accounts-sort-alphabetical
+                             (sort (copy-sequence accounts)
+                                   (lambda (a b)
+                                     (string< (plist-get a :name)
+                                             (plist-get b :name))))
+                           accounts)))
     (erase-buffer)
     (insert (propertize "Mail.app Accounts\n" 'face 'bold))
     (insert "\n")
     (insert "Commands: [RET] mailboxes  [c] compose  [s] search  [S] search all\n")
-    (insert "          [J] jump to Mail.app  [g/r] refresh  [q] quit  [?] help\n\n")
-    (insert (format "%-30s %-40s %-10s\n"
-                    "ACCOUNT" "EMAIL" "ENABLED"))
+    (insert "          [o] toggle sort  [J] jump to Mail.app  [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert (format "%-30s %-40s %-10s  Sort: %s\n"
+                    "ACCOUNT" "EMAIL" "ENABLED"
+                    (if mail-app-accounts-sort-alphabetical "alphabetical" "natural")))
     (insert (make-string 85 ?-) "\n")
-    (dolist (account accounts)
+    (dolist (account sorted-accounts)
       (let* ((name (plist-get account :name))
              (email (plist-get account :email))
              (enabled (plist-get account :enabled))
@@ -812,6 +823,17 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
         (message "No account at point")
       (let ((name (plist-get account :name)))
         (mail-app-list-mailboxes-for-account name)))))
+
+(defun mail-app-toggle-accounts-sort ()
+  "Toggle between alphabetical and natural (setup) order for accounts."
+  (interactive)
+  (unless mail-app-accounts-data
+    (error "No accounts to sort"))
+  (setq mail-app-accounts-sort-alphabetical (not mail-app-accounts-sort-alphabetical))
+  (mail-app--format-accounts mail-app-accounts-data)
+  (mail-app--speak (format "Sorted by %s order"
+                          (if mail-app-accounts-sort-alphabetical "alphabetical" "natural"))
+                  'select-object))
 
 ;;; Interactive commands - Mailboxes
 
@@ -2152,6 +2174,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       (kbd "RET") 'mail-app-view-mailboxes-at-point
       "c" 'mail-app-compose
       "J" 'mail-app-jump-to-mail-app
+      "o" 'mail-app-toggle-accounts-sort
       "g" nil
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
