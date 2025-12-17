@@ -1732,9 +1732,40 @@ each message. When disabled, only subject and sender are read."
         (dolist (attachment (nreverse attachments))
           (setq args (append args (list "--attach" attachment))))
         (apply 'mail-app--run-command args)
-        (if (> (length attachments) 0)
-            (message "Message sent via %s with %d attachment(s)" account (length attachments))
-          (message "Message sent via %s" account))))))
+        ;; Verify message was sent by checking Sent folder
+        (sleep-for 2)  ; Give Mail.app time to save to Sent folder
+        (condition-case err
+            (let* ((sent-mailboxes '("Sent Mail" "Sent Items" "Sent"))
+                   (found nil))
+              ;; Try each common sent mailbox name
+              (dolist (sent-box sent-mailboxes)
+                (unless found
+                  (condition-case nil
+                      (let* ((recent-sent (mail-app--run-command "messages" "list"
+                                                                "-a" account
+                                                                "-m" sent-box
+                                                                "-l" "5"))
+                             (messages (mail-app--parse-messages-output recent-sent)))
+                        ;; Look for our message by subject and recipient
+                        (when (seq-find (lambda (msg)
+                                         (and (string= (plist-get msg :subject) subject)
+                                              (string-match-p (regexp-quote (car (split-string to ",")))
+                                                            (or (car (plist-get msg :to)) ""))))
+                                       messages)
+                          (setq found t)))
+                    (error nil))))
+              (if found
+                  (if (> (length attachments) 0)
+                      (message "VERIFIED: Message sent via %s with %d attachment(s) and found in Sent folder"
+                              account (length attachments))
+                    (message "VERIFIED: Message sent via %s and found in Sent folder" account))
+                (if (> (length attachments) 0)
+                    (message "Message sent via %s with %d attachment(s) (CLI reported success)"
+                            account (length attachments))
+                  (message "Message sent via %s (CLI reported success)" account))))
+          (error
+           ;; If verification fails, still report send success but note verification failed
+           (message "Message sent via %s (verification check failed: %s)" account err)))))))
 
 ;; Custom send function for message-mode
 (defun mail-app--message-send-mail ()
