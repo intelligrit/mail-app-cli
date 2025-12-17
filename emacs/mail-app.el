@@ -134,6 +134,7 @@ Example:
     (define-key map (kbd "s") 'mail-app-search)
     (define-key map (kbd "S") 'mail-app-search-all)
     (define-key map (kbd "f") 'mail-app-flag-message-at-point)
+    (define-key map (kbd "F") 'mail-app-forward-message-at-point)
     (define-key map (kbd "d") 'mail-app-delete-message-at-point)
     (define-key map (kbd "a") 'mail-app-archive-message-at-point)
     (define-key map (kbd "t") 'mail-app-mark-message-at-point)
@@ -164,6 +165,7 @@ Example:
     (define-key map (kbd "p") 'previous-line)
     (define-key map (kbd "r") 'mail-app-reply-current-message)
     (define-key map (kbd "R") 'mail-app-reply-all-current-message)
+    (define-key map (kbd "F") 'mail-app-forward-current-message)
     (define-key map (kbd "TAB") 'mail-app-cycle-view)
     (define-key map (kbd "<backtab>") 'mail-app-cycle-view-reverse)
     (define-key map (kbd "f") 'mail-app-flag-current-message)
@@ -1281,6 +1283,20 @@ each message. When disabled, only subject and sender are read."
          "-a" mail-app-current-account
          "-m" mail-app-current-mailbox)))))
 
+(defun mail-app-forward-message-at-point ()
+  "Forward message at point."
+  (interactive)
+  (when-let ((message (mail-app--get-message-at-point)))
+    (let* ((account (or (plist-get message :account) mail-app-current-account))
+           (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
+           (id (plist-get message :id)))
+      ;; Set current context for the forward function
+      (setq mail-app-current-account account)
+      (setq mail-app-current-mailbox mailbox)
+      (setq mail-app-current-message-id id)
+      ;; Call the forward function
+      (mail-app-forward-current-message))))
+
 (defun mail-app-mark-message-at-point ()
   "Toggle read status of message at point."
   (interactive)
@@ -1469,6 +1485,50 @@ each message. When disabled, only subject and sender are read."
         (insert (replace-regexp-in-string "^" "> " body)))
       (message-goto-body)
       (message "Composing reply to all..."))))
+
+(defun mail-app-forward-current-message ()
+  "Forward the current message."
+  (interactive)
+  (when mail-app-current-message-id
+    (let* ((output (mail-app--run-command "messages" "show" mail-app-current-message-id
+                                          "-a" mail-app-current-account
+                                          "-m" mail-app-current-mailbox))
+           (details (mail-app--parse-message-details output))
+           (from (plist-get details :from))
+           (date (plist-get details :date-sent))
+           (to (plist-get details :to))
+           (subject (plist-get details :subject))
+           (body (plist-get details :content))
+           (fwd-subject (if (string-prefix-p "Fwd: " subject)
+                            subject
+                          (concat "Fwd: " subject)))
+           (from-email (mail-app--get-account-email mail-app-current-account)))
+      (compose-mail nil fwd-subject)
+      ;; Now we're in the message buffer - set message-options here
+      (setq-local message-options `((account . ,mail-app-current-account)))
+      ;; Override send function to use mail-app-cli
+      (setq-local message-send-mail-function 'mail-app--message-send-mail)
+      ;; Set From header based on account email
+      (message-goto-from)
+      (beginning-of-line)
+      (kill-line)
+      (insert (format "From: %s" from-email))
+      (message-goto-body)
+      ;; Insert signature if configured
+      (when-let ((signature (mail-app--get-signature mail-app-current-account)))
+        (insert "\n" signature "\n\n"))
+      ;; Insert forwarded message header and body
+      (insert "---------- Forwarded message ----------\n")
+      (insert (format "From: %s\n" from))
+      (when date
+        (insert (format "Date: %s\n" date)))
+      (when to
+        (insert (format "To: %s\n" to)))
+      (insert (format "Subject: %s\n\n" subject))
+      (when body
+        (insert body))
+      (message-goto-to)
+      (message "Composing forward..."))))
 
 (defun mail-app-send-message ()
   "Send the current message using mail-app-cli."
@@ -2009,6 +2069,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       "s" 'mail-app-search
       "S" 'mail-app-search-all
       "f" 'mail-app-flag-message-at-point
+      "F" 'mail-app-forward-message-at-point
       "d" 'mail-app-delete-message-at-point
       "a" 'mail-app-archive-message-at-point
       "t" 'mail-app-mark-message-at-point
@@ -2032,6 +2093,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       (kbd "RET") 'mail-app-save-attachment-at-point
       "r" 'mail-app-reply-current-message
       "R" 'mail-app-reply-all-current-message
+      "F" 'mail-app-forward-current-message
       (kbd "TAB") 'mail-app-cycle-view
       (kbd "<backtab>") 'mail-app-cycle-view-reverse
       "c" 'mail-app-compose
