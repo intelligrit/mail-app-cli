@@ -1732,10 +1732,12 @@ each message. When disabled, only subject and sender are read."
         (dolist (attachment (nreverse attachments))
           (setq args (append args (list "--attach" attachment))))
         (apply 'mail-app--run-command args)
-        (if (> (length attachments) 0)
-            (message "Message sent via %s with %d attachment(s)" account (length attachments))
-          (message "Message sent via %s" account))
-        (kill-buffer)))))
+        (let ((buf (current-buffer)))
+          (if (> (length attachments) 0)
+              (message "Message sent via %s with %d attachment(s)" account (length attachments))
+            (message "Message sent via %s" account))
+          ;; Kill buffer after a brief delay to avoid race condition with message-mode
+          (run-at-time 0.1 nil (lambda () (when (buffer-live-p buf) (kill-buffer buf)))))))))
 
 ;; Custom send function for message-mode
 (defun mail-app--message-send-mail ()
