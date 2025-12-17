@@ -1544,6 +1544,7 @@ each message. When disabled, only subject and sender are read."
       (compose-mail from reply-subject)
       ;; Now we're in the message buffer - set message-options here
       (setq-local message-options `((account . ,mail-app-current-account)))
+      (setq-local message-send-mail-function 'mail-app--message-send-mail)
       ;; Set From header based on account email
       (message-goto-from)
       (beginning-of-line)
@@ -1582,6 +1583,7 @@ each message. When disabled, only subject and sender are read."
       (compose-mail all-recipients reply-subject)
       ;; Now we're in the message buffer - set message-options here
       (setq-local message-options `((account . ,mail-app-current-account)))
+      (setq-local message-send-mail-function 'mail-app--message-send-mail)
       ;; Set From header based on account email
       (message-goto-from)
       (beginning-of-line)
@@ -1619,6 +1621,7 @@ each message. When disabled, only subject and sender are read."
       (compose-mail nil fwd-subject)
       ;; Now we're in the message buffer - set message-options here
       (setq-local message-options `((account . ,mail-app-current-account)))
+      (setq-local message-send-mail-function 'mail-app--message-send-mail)
       ;; Set From header based on account email
       (message-goto-from)
       (beginning-of-line)
@@ -1761,6 +1764,7 @@ each message. When disabled, only subject and sender are read."
     (compose-mail)
     ;; Now we're in the message buffer - set message-options here
     (setq-local message-options `((account . ,account)))
+    (setq-local message-send-mail-function 'mail-app--message-send-mail)
     ;; Set From header based on account email
     (message-goto-from)
     (beginning-of-line)
