@@ -247,7 +247,7 @@ Returns the email address associated with the account, or the account name if no
 (defun mail-app--get-signature (account-name)
   "Get the signature for ACCOUNT-NAME.
 Returns the signature text or nil if none is configured."
-  (when-let ((sig-config (cdr (assoc account-name mail-app-signatures))))
+  (when-let* ((sig-config (cdr (assoc account-name mail-app-signatures))))
     (cond
      ;; Function - call it
      ((functionp sig-config)
@@ -1370,7 +1370,7 @@ each message. When disabled, only subject and sender are read."
 (defun mail-app-forward-message-at-point ()
   "Forward message at point."
   (interactive)
-  (when-let ((message (mail-app--get-message-at-point)))
+  (when-let* ((message (mail-app--get-message-at-point)))
     (let* ((account (or (plist-get message :account) mail-app-current-account))
            (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
            (id (plist-get message :id)))
@@ -1520,7 +1520,7 @@ each message. When disabled, only subject and sender are read."
       (insert (format "From: %s" from-email))
       (message-goto-body)
       ;; Insert signature if configured
-      (when-let ((signature (mail-app--get-signature mail-app-current-account)))
+      (when-let* ((signature (mail-app--get-signature mail-app-current-account)))
         (insert "\n" signature "\n"))
       ;; Insert quoted original message
       (when body
@@ -1560,7 +1560,7 @@ each message. When disabled, only subject and sender are read."
       (insert (format "From: %s" from-email))
       (message-goto-body)
       ;; Insert signature if configured
-      (when-let ((signature (mail-app--get-signature mail-app-current-account)))
+      (when-let* ((signature (mail-app--get-signature mail-app-current-account)))
         (insert "\n" signature "\n"))
       ;; Insert quoted original message
       (when body
@@ -1599,7 +1599,7 @@ each message. When disabled, only subject and sender are read."
       (insert (format "From: %s" from-email))
       (message-goto-body)
       ;; Insert signature if configured
-      (when-let ((signature (mail-app--get-signature mail-app-current-account)))
+      (when-let* ((signature (mail-app--get-signature mail-app-current-account)))
         (insert "\n" signature "\n\n"))
       ;; Insert forwarded message header and body
       (insert "---------- Forwarded message ----------\n")
@@ -1733,7 +1733,7 @@ each message. When disabled, only subject and sender are read."
     (kill-line)
     (insert (format "From: %s" from-email))
     ;; Insert signature if configured
-    (when-let ((signature (mail-app--get-signature account)))
+    (when-let* ((signature (mail-app--get-signature account)))
       (message-goto-body)
       (goto-char (point-max))
       (unless (bolp) (insert "\n"))
