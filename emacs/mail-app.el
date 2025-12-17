@@ -565,27 +565,41 @@ Optionally play audio ICON."
 
 (defun mail-app--format-mailboxes (mailboxes)
   "Format MAILBOXES for display."
-  (let ((inhibit-read-only t)
-        (sorted-mailboxes (mail-app--sort-mailboxes mailboxes)))
+  (let* ((inhibit-read-only t)
+         (sorted-mailboxes (mail-app--sort-mailboxes mailboxes))
+         (single-account (and mail-app-current-account
+                             (not (string= mail-app-current-account "")))))
     (erase-buffer)
-    (insert (propertize (format "Mail.app Mailboxes: %s\n"
-                                (or mail-app-current-account "All Accounts"))
+    (insert (propertize (format "Mail.app Mailboxes%s\n"
+                                (if single-account
+                                    (format ": %s" mail-app-current-account)
+                                  ""))
                         'face 'bold))
     (insert "\n")
     (insert "Commands: [RET] messages  [c] compose  [s] search  [S] search all\n")
     (insert "          [J] jump to Mail.app  [g/r] refresh  [q] quit  [?] help\n\n")
-    (insert (format "%-30s %-50s %8s %8s\n"
-                    "ACCOUNT" "MAILBOX" "UNREAD" "TOTAL"))
-    (insert (make-string 100 ?-) "\n")
+    (if single-account
+        (progn
+          (insert (format "%-60s %8s %8s\n"
+                          "MAILBOX" "UNREAD" "TOTAL"))
+          (insert (make-string 80 ?-) "\n"))
+      (progn
+        (insert (format "%-30s %-40s %8s %8s\n"
+                        "ACCOUNT" "MAILBOX" "UNREAD" "TOTAL"))
+        (insert (make-string 90 ?-) "\n")))
     (dolist (mailbox sorted-mailboxes)
       (let* ((account (plist-get mailbox :account))
              (name (plist-get mailbox :name))
              (unread (plist-get mailbox :unread))
              (total (plist-get mailbox :total))
-             (line (format "%-30s %-50s %8d %8d\n"
-                           account name unread total))
-             (speech-text (format "%s mailbox in %s account, %d unread, %d total"
-                                  name account unread total))
+             (line (if single-account
+                       (format "%-60s %8d %8d\n" name unread total)
+                     (format "%-30s %-40s %8d %8d\n" account name unread total)))
+             (speech-text (if single-account
+                              (format "%s mailbox, %d unread, %d total"
+                                     name unread total)
+                            (format "%s mailbox in %s account, %d unread, %d total"
+                                   name account unread total)))
              (start (point)))
         (insert line)
         (put-text-property start (point) 'mail-app-mailbox-data mailbox)
