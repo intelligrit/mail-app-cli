@@ -266,6 +266,39 @@ Returns the signature text or nil if none is configured."
       sig-config)
      (t nil))))
 
+;;;###autoload
+(defun mail-app-configure-signature ()
+  "Interactively configure a signature for an account."
+  (interactive)
+  (let* ((accounts-output (mail-app--run-command "accounts" "list"))
+         (accounts (mail-app--parse-accounts-output accounts-output))
+         (account-names (mapcar (lambda (acc) (plist-get acc :name)) accounts))
+         (account (completing-read "Account: " account-names nil t))
+         (sig-type (completing-read "Signature type: "
+                                   '("Text" "File" "Remove signature")
+                                   nil t))
+         (new-sig (pcase sig-type
+                    ("Text"
+                     (read-string "Signature text (use \\n for newlines): "))
+                    ("File"
+                     (read-file-name "Signature file: " "~/"))
+                    ("Remove signature" nil)
+                    (_ nil))))
+    (if (null new-sig)
+        ;; Remove signature
+        (progn
+          (setq mail-app-signatures (assoc-delete-all account mail-app-signatures))
+          (message "Removed signature for %s" account))
+      ;; Add/update signature
+      (let ((existing (assoc account mail-app-signatures)))
+        (if existing
+            (setcdr existing new-sig)
+          (push (cons account new-sig) mail-app-signatures)))
+      (message "Set signature for %s" account))
+    ;; Offer to save
+    (when (y-or-n-p "Save to custom.el? ")
+      (customize-save-variable 'mail-app-signatures mail-app-signatures))))
+
 (defun mail-app--run-command (&rest args)
   "Run mail-app-cli command with ARGS and return output."
   (with-temp-buffer
