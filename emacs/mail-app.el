@@ -1650,37 +1650,49 @@ each message. When disabled, only subject and sender are read."
 (defun mail-app-send-message ()
   "Send the current message using mail-app-cli."
   (interactive)
-  (save-excursion
-    (goto-char (point-min))
-    (let* ((to (mail-fetch-field "To"))
-           (cc (mail-fetch-field "Cc"))
-           (bcc (mail-fetch-field "Bcc"))
-           (subject (mail-fetch-field "Subject"))
-           (from (mail-fetch-field "From"))
-           ;; Extract account from message-options or From header
-           (account (or (when (boundp 'message-options)
-                          (cdr (assq 'account message-options)))
-                       (when from
-                         ;; Try to match From email to account
-                         (let ((email (if (string-match "<\\(.+\\)>" from)
-                                          (match-string 1 from)
-                                        from)))
-                           ;; Use the email as account identifier
-                           email))
-                       mail-app-current-account
-                       mail-app-default-account
-                       (read-string "Account: ")))
-           ;; Parse MML to extract attachments and body
-           (attachments '())
-           (body-start (save-excursion
-                         (goto-char (point-min))
-                         (search-forward mail-header-separator nil t)
-                         (forward-line 1)
-                         (point)))
-           (mml-structure (condition-case nil
+  (let* ((to (save-excursion
+               (goto-char (point-min))
+               (mail-fetch-field "To")))
+         (cc (save-excursion
+               (goto-char (point-min))
+               (mail-fetch-field "Cc")))
+         (bcc (save-excursion
+                (goto-char (point-min))
+                (mail-fetch-field "Bcc")))
+         (subject (save-excursion
+                    (goto-char (point-min))
+                    (mail-fetch-field "Subject")))
+         (from (save-excursion
+                 (goto-char (point-min))
+                 (mail-fetch-field "From")))
+         ;; Extract account from message-options or From header
+         (account (or (when (boundp 'message-options)
+                        (cdr (assq 'account message-options)))
+                     (when from
+                       ;; Try to match From email to account
+                       (let ((email (if (string-match "<\\(.+\\)>" from)
+                                        (match-string 1 from)
+                                      from)))
+                         ;; Use the email as account identifier
+                         email))
+                     mail-app-current-account
+                     mail-app-default-account
+                     (read-string "Account: ")))
+         ;; Parse MML to extract attachments and body
+         (body-start (save-excursion
+                       (goto-char (point-min))
+                       (search-forward mail-header-separator nil t)
+                       (forward-line 1)
+                       (point)))
+         (mml-structure (save-excursion
+                          (condition-case nil
                               (mml-parse)
-                            (error nil)))
-           (body-text ""))
+                            (error nil))))
+         (body-text-raw (save-excursion
+                          (goto-char body-start)
+                          (buffer-substring-no-properties body-start (point-max)))))
+    (let ((attachments '())
+          (body-text ""))
       ;; Extract attachments from MML structure
       (when mml-structure
         (let ((parts (if (eq (car mml-structure) 'multipart)
@@ -1699,7 +1711,7 @@ each message. When disabled, only subject and sender are read."
         ;; Get the text body by generating without attachments
         (setq body-text
               (with-temp-buffer
-                (insert (buffer-substring-no-properties body-start (point-max)))
+                (insert body-text-raw)
                 ;; Remove attachment tags but keep text parts
                 (goto-char (point-min))
                 (while (re-search-forward "<#part[^>]+disposition=attachment[^>]*>.*?<#/part>" nil t)
