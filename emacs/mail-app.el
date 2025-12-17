@@ -1544,8 +1544,6 @@ each message. When disabled, only subject and sender are read."
       (compose-mail from reply-subject)
       ;; Now we're in the message buffer - set message-options here
       (setq-local message-options `((account . ,mail-app-current-account)))
-      ;; Override send function to use mail-app-cli
-      (setq-local message-send-mail-function 'mail-app--message-send-mail)
       ;; Set From header based on account email
       (message-goto-from)
       (beginning-of-line)
@@ -1584,8 +1582,6 @@ each message. When disabled, only subject and sender are read."
       (compose-mail all-recipients reply-subject)
       ;; Now we're in the message buffer - set message-options here
       (setq-local message-options `((account . ,mail-app-current-account)))
-      ;; Override send function to use mail-app-cli
-      (setq-local message-send-mail-function 'mail-app--message-send-mail)
       ;; Set From header based on account email
       (message-goto-from)
       (beginning-of-line)
@@ -1623,8 +1619,6 @@ each message. When disabled, only subject and sender are read."
       (compose-mail nil fwd-subject)
       ;; Now we're in the message buffer - set message-options here
       (setq-local message-options `((account . ,mail-app-current-account)))
-      ;; Override send function to use mail-app-cli
-      (setq-local message-send-mail-function 'mail-app--message-send-mail)
       ;; Set From header based on account email
       (message-goto-from)
       (beginning-of-line)
@@ -1650,23 +1644,20 @@ each message. When disabled, only subject and sender are read."
 (defun mail-app-send-message ()
   "Send the current message using mail-app-cli."
   (interactive)
-  (let* ((to (save-excursion
-               (goto-char (point-min))
-               (mail-fetch-field "To")))
-         (cc (save-excursion
-               (goto-char (point-min))
-               (mail-fetch-field "Cc")))
-         (bcc (save-excursion
-                (goto-char (point-min))
-                (mail-fetch-field "Bcc")))
-         (subject (save-excursion
-                    (goto-char (point-min))
-                    (mail-fetch-field "Subject")))
-         (from (save-excursion
-                 (goto-char (point-min))
-                 (mail-fetch-field "From")))
-         ;; Extract account from message-options or From header
-         (account (or (when (boundp 'message-options)
+  (let* (to cc bcc subject from account body-start mml-structure body-text-raw)
+    ;; Extract all data in one go without save-excursion
+    (goto-char (point-min))
+    (setq to (mail-fetch-field "To"))
+    (goto-char (point-min))
+    (setq cc (mail-fetch-field "Cc"))
+    (goto-char (point-min))
+    (setq bcc (mail-fetch-field "Bcc"))
+    (goto-char (point-min))
+    (setq subject (mail-fetch-field "Subject"))
+    (goto-char (point-min))
+    (setq from (mail-fetch-field "From"))
+    ;; Extract account from message-options or From header
+    (setq account (or (when (boundp 'message-options)
                         (cdr (assq 'account message-options)))
                      (when from
                        ;; Try to match From email to account
@@ -1678,19 +1669,17 @@ each message. When disabled, only subject and sender are read."
                      mail-app-current-account
                      mail-app-default-account
                      (read-string "Account: ")))
-         ;; Parse MML to extract attachments and body
-         (body-start (save-excursion
-                       (goto-char (point-min))
-                       (search-forward mail-header-separator nil t)
-                       (forward-line 1)
-                       (point)))
-         (mml-structure (save-excursion
-                          (condition-case nil
-                              (mml-parse)
-                            (error nil))))
-         (body-text-raw (save-excursion
-                          (goto-char body-start)
-                          (buffer-substring-no-properties body-start (point-max)))))
+    ;; Get body start position
+    (goto-char (point-min))
+    (search-forward mail-header-separator nil t)
+    (forward-line 1)
+    (setq body-start (point))
+    ;; Extract body text
+    (setq body-text-raw (buffer-substring-no-properties body-start (point-max)))
+    ;; Parse MML
+    (setq mml-structure (condition-case nil
+                            (mml-parse)
+                          (error nil)))
     (let ((attachments '())
           (body-text ""))
       ;; Extract attachments from MML structure
@@ -1745,45 +1734,9 @@ each message. When disabled, only subject and sender are read."
           (setq args (append args (list "--attach" attachment))))
         (apply 'mail-app--run-command args)
         ;; Verify message was sent by polling Sent folder
-        (condition-case err
-            (let* ((sent-mailboxes '("Sent Mail" "Sent Items" "Sent"))
-                   (found nil)
-                   (max-attempts 4)
-                   (attempt 0))
-              ;; Poll for the message (try up to 4 times with 0.5s delays = 2s total)
-              (while (and (not found) (< attempt max-attempts))
-                (setq attempt (1+ attempt))
-                (when (> attempt 1)
-                  (sleep-for 0.5))  ; Wait before retry (skip first attempt)
-                ;; Try each common sent mailbox name
-                (dolist (sent-box sent-mailboxes)
-                  (unless found
-                    (condition-case nil
-                        (let* ((recent-sent (mail-app--run-command "messages" "list"
-                                                                  "-a" account
-                                                                  "-m" sent-box
-                                                                  "-l" "5"))
-                               (messages (mail-app--parse-messages-output recent-sent)))
-                          ;; Look for our message by subject and recipient
-                          (when (seq-find (lambda (msg)
-                                           (and (string= (plist-get msg :subject) subject)
-                                                (string-match-p (regexp-quote (car (split-string to ",")))
-                                                              (or (car (plist-get msg :to)) ""))))
-                                         messages)
-                            (setq found t)))
-                      (error nil)))))
-              (if found
-                  (if (> (length attachments) 0)
-                      (message "VERIFIED: Message sent via %s with %d attachment(s) and found in Sent folder"
-                              account (length attachments))
-                    (message "VERIFIED: Message sent via %s and found in Sent folder" account))
-                (if (> (length attachments) 0)
-                    (message "Message sent via %s with %d attachment(s) (CLI reported success)"
-                            account (length attachments))
-                  (message "Message sent via %s (CLI reported success)" account))))
-          (error
-           ;; If verification fails, still report send success but note verification failed
-           (message "Message sent via %s (verification check failed: %s)" account err)))))))
+        (if (> (length attachments) 0)
+            (message "Message sent via %s with %d attachment(s)" account (length attachments))
+          (message "Message sent via %s" account)))))
 
 ;; Custom send function for message-mode
 (defun mail-app--message-send-mail ()
@@ -1808,8 +1761,6 @@ each message. When disabled, only subject and sender are read."
     (compose-mail)
     ;; Now we're in the message buffer - set message-options here
     (setq-local message-options `((account . ,account)))
-    ;; Override send function to use mail-app-cli
-    (setq-local message-send-mail-function 'mail-app--message-send-mail)
     ;; Set From header based on account email
     (message-goto-from)
     (beginning-of-line)
