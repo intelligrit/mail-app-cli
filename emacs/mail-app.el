@@ -137,6 +137,8 @@ Example:
     (define-key map (kbd "F") 'mail-app-forward-message-at-point)
     (define-key map (kbd "d") 'mail-app-delete-message-at-point)
     (define-key map (kbd "a") 'mail-app-archive-message-at-point)
+    (define-key map (kbd "j") 'mail-app-junk-message-at-point)
+    (define-key map (kbd "v") 'mail-app-move-message-at-point)
     (define-key map (kbd "t") 'mail-app-mark-message-at-point)
     (define-key map (kbd "u") 'mail-app-show-unread)
     (define-key map (kbd "C") 'mail-app-toggle-read-content)
@@ -152,6 +154,8 @@ Example:
     (define-key map (kbd "x") 'mail-app-delete-marked)
     (define-key map (kbd ",a") 'mail-app-archive-marked)
     (define-key map (kbd ",f") 'mail-app-flag-marked)
+    (define-key map (kbd ",j") 'mail-app-junk-marked)
+    (define-key map (kbd ",v") 'mail-app-move-marked)
     (define-key map (kbd ",r") 'mail-app-mark-marked-as-read)
     (define-key map (kbd ",u") 'mail-app-mark-marked-as-unread)
     (define-key map (kbd "q") 'quit-window)
@@ -1283,6 +1287,50 @@ each message. When disabled, only subject and sender are read."
          "-a" mail-app-current-account
          "-m" mail-app-current-mailbox)))))
 
+(defun mail-app-junk-message-at-point ()
+  "Mark message at point as junk (move to Junk mailbox)."
+  (interactive)
+  (let ((message (mail-app--get-message-at-point)))
+    (if (not message)
+        (message "No message at point")
+      (mail-app--speak "Marking as junk" 'select-object)
+      (let ((id (plist-get message :id))
+            (buf (current-buffer)))
+        (mail-app--run-command-async
+         (lambda (output)
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (mail-app--speak "Marked as junk" 'task-done)
+               (mail-app-refresh))))
+         "messages" "move" id "Junk"
+         "-a" mail-app-current-account
+         "-m" mail-app-current-mailbox)))))
+
+(defun mail-app-move-message-at-point (target-mailbox)
+  "Move message at point to TARGET-MAILBOX."
+  (interactive
+   (list (completing-read "Move to mailbox: "
+                         (let* ((output (mail-app--run-command "mailboxes" "list"
+                                                              "-a" mail-app-current-account))
+                                (mailboxes (mail-app--parse-mailboxes-output output)))
+                           (mapcar (lambda (mbox) (plist-get mbox :name)) mailboxes))
+                         nil t)))
+  (let ((message (mail-app--get-message-at-point)))
+    (if (not message)
+        (message "No message at point")
+      (mail-app--speak (format "Moving to %s" target-mailbox) 'select-object)
+      (let ((id (plist-get message :id))
+            (buf (current-buffer)))
+        (mail-app--run-command-async
+         (lambda (output)
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (mail-app--speak (format "Moved to %s" target-mailbox) 'task-done)
+               (mail-app-refresh))))
+         "messages" "move" id target-mailbox
+         "-a" mail-app-current-account
+         "-m" mail-app-current-mailbox)))))
+
 (defun mail-app-forward-message-at-point ()
   "Forward message at point."
   (interactive)
@@ -1910,6 +1958,78 @@ each message. When disabled, only subject and sender are read."
         (mail-app--speak msg 'task-done))
       (mail-app-refresh))))
 
+(defun mail-app-junk-marked ()
+  "Mark all marked messages as junk (move to Junk mailbox)."
+  (interactive)
+  (if (null mail-app-marked-messages)
+      (message "No messages marked")
+    (mail-app--speak (format "Marking %d messages as junk" (length mail-app-marked-messages)) 'select-object)
+    (let ((count 0)
+          (errors 0)
+          (total (length mail-app-marked-messages)))
+      (dolist (id mail-app-marked-messages)
+        (condition-case err
+            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                 mail-app-messages-data))
+                   (account (or (plist-get msg :account) mail-app-current-account))
+                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
+              (when (and account mailbox)
+                (mail-app--run-command "messages" "move" id "Junk"
+                                       "-a" account
+                                       "-m" mailbox)
+                (setq count (1+ count))
+                (when (zerop (mod count 5))
+                  (message "Marked %d/%d as junk..." count total))))
+          (error
+           (setq errors (1+ errors))
+           nil)))
+      (setq mail-app-marked-messages nil)
+      (let ((msg (format "Marked %d of %d messages as junk%s"
+                        count total
+                        (if (> errors 0) (format " (%d failed)" errors) ""))))
+        (message msg)
+        (mail-app--speak msg 'task-done))
+      (mail-app-refresh))))
+
+(defun mail-app-move-marked (target-mailbox)
+  "Move all marked messages to TARGET-MAILBOX."
+  (interactive
+   (list (completing-read "Move to mailbox: "
+                         (let* ((output (mail-app--run-command "mailboxes" "list"
+                                                              "-a" (or mail-app-current-account "")))
+                                (mailboxes (mail-app--parse-mailboxes-output output)))
+                           (mapcar (lambda (mbox) (plist-get mbox :name)) mailboxes))
+                         nil t)))
+  (if (null mail-app-marked-messages)
+      (message "No messages marked")
+    (mail-app--speak (format "Moving %d messages to %s" (length mail-app-marked-messages) target-mailbox) 'select-object)
+    (let ((count 0)
+          (errors 0)
+          (total (length mail-app-marked-messages)))
+      (dolist (id mail-app-marked-messages)
+        (condition-case err
+            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                 mail-app-messages-data))
+                   (account (or (plist-get msg :account) mail-app-current-account))
+                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
+              (when (and account mailbox)
+                (mail-app--run-command "messages" "move" id target-mailbox
+                                       "-a" account
+                                       "-m" mailbox)
+                (setq count (1+ count))
+                (when (zerop (mod count 5))
+                  (message "Moved %d/%d to %s..." count total target-mailbox))))
+          (error
+           (setq errors (1+ errors))
+           nil)))
+      (setq mail-app-marked-messages nil)
+      (let ((msg (format "Moved %d of %d messages to %s%s"
+                        count total target-mailbox
+                        (if (> errors 0) (format " (%d failed)" errors) ""))))
+        (message msg)
+        (mail-app--speak msg 'task-done))
+      (mail-app-refresh))))
+
 ;;; Search
 
 ;;;###autoload
@@ -2072,6 +2192,8 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       "F" 'mail-app-forward-message-at-point
       "d" 'mail-app-delete-message-at-point
       "a" 'mail-app-archive-message-at-point
+      "j" 'mail-app-junk-message-at-point
+      "v" 'mail-app-move-message-at-point
       "t" 'mail-app-mark-message-at-point
       "u" 'mail-app-show-unread
       "N" 'mail-app-load-more-messages
@@ -2082,6 +2204,8 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
       "x" 'mail-app-delete-marked
       ",a" 'mail-app-archive-marked
       ",f" 'mail-app-flag-marked
+      ",j" 'mail-app-junk-marked
+      ",v" 'mail-app-move-marked
       ",r" 'mail-app-mark-marked-as-read
       ",u" 'mail-app-mark-marked-as-unread
       "q" 'quit-window
