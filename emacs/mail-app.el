@@ -1031,12 +1031,17 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                      (if (null new-messages)
                          (mail-app--speak "No more messages" 'warn-user)
                        (setq mail-app-current-offset new-offset)
-                       (setq mail-app-messages-data (append mail-app-messages-data new-messages))
-                       (mail-app--format-messages mail-app-messages-data)
-                       (mail-app--speak (format "Loaded %d more messages, total %d"
-                                                (length new-messages)
-                                                (length mail-app-messages-data))
-                                        'task-done))))))
+                       ;; Deduplicate by message ID before appending
+                       (let ((existing-ids (mapcar (lambda (m) (plist-get m :id)) mail-app-messages-data))
+                             (unique-new-messages (seq-filter (lambda (m)
+                                                               (not (member (plist-get m :id) existing-ids)))
+                                                             new-messages)))
+                         (setq mail-app-messages-data (append mail-app-messages-data unique-new-messages))
+                         (mail-app--format-messages mail-app-messages-data)
+                         (mail-app--speak (format "Loaded %d more messages, total %d"
+                                                  (length unique-new-messages)
+                                                  (length mail-app-messages-data))
+                                          'task-done)))))))
              args))))
 
 (defun mail-app-view-message-at-point ()
