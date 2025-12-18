@@ -1684,39 +1684,27 @@ each message. When disabled, only subject and sender are read."
     (setq body-start (point))
     ;; Extract body text
     (setq body-text-raw (buffer-substring-no-properties body-start (point-max)))
-    ;; Parse MML
-    (setq mml-structure (condition-case nil
-                            (mml-parse)
-                          (error nil)))
+    ;; Parse attachments from MML tags in the raw text (avoid mml-parse which accesses buffer)
     (let ((attachments '())
           (body-text ""))
-      ;; Extract attachments from MML structure
-      (when mml-structure
-        (let ((parts (if (eq (car mml-structure) 'multipart)
-                         (cddr mml-structure)
-                       (list mml-structure))))
-          (dolist (part parts)
-            (when (listp part)
-              (let ((type (cdr (assq 'type (cdr part))))
-                    (filename (cdr (assq 'filename (cdr part))))
-                    (disposition (cdr (assq 'disposition (cdr part)))))
-                (when (and filename
-                          (or (equal disposition "attachment")
-                              (not (or (equal type "text/plain")
-                                      (equal type "text/html")))))
-                  (push (expand-file-name filename) attachments))))))
-        ;; Get the text body by generating without attachments
-        (setq body-text
-              (with-temp-buffer
-                (insert body-text-raw)
-                ;; Remove attachment tags but keep text parts
-                (goto-char (point-min))
-                (while (re-search-forward "<#part[^>]+disposition=attachment[^>]*>.*?<#/part>" nil t)
-                  (replace-match ""))
-                (goto-char (point-min))
-                (while (re-search-forward "<#/?\\(multipart\\|part\\)[^>]*>" nil t)
-                  (replace-match ""))
-                (buffer-substring-no-properties (point-min) (point-max)))))
+      ;; Extract attachment filenames from MML tags
+      (with-temp-buffer
+        (insert body-text-raw)
+        (goto-char (point-min))
+        (while (re-search-forward "<#part[^>]+filename=\"\\([^\"]+\\)\"[^>]*disposition=attachment" nil t)
+          (push (expand-file-name (match-string 1)) attachments)))
+      ;; Get the text body by removing attachment tags
+      (setq body-text
+            (with-temp-buffer
+              (insert body-text-raw)
+              ;; Remove attachment tags but keep text parts
+              (goto-char (point-min))
+              (while (re-search-forward "<#part[^>]+disposition=attachment[^>]*>.*?<#/part>" nil t)
+                (replace-match ""))
+              (goto-char (point-min))
+              (while (re-search-forward "<#/?\\(multipart\\|part\\)[^>]*>" nil t)
+                (replace-match ""))
+              (buffer-substring-no-properties (point-min) (point-max))))
       (setq body-text (string-trim body-text))
 
       (unless to
