@@ -217,7 +217,7 @@
                ((not read)
                 (put-text-property start line-end 'face 'bold))))))))
     (goto-char (point-min))
-    (forward-line 9)) 
+    (forward-line 9))  ; Skip title, blank, command lines (5), blank, header 
 
  ; Skip title, blank, command lines (5), blank, header
 
