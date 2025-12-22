@@ -297,7 +297,7 @@ Returns the signature text or nil if none is configured."
 (defun mail-app--run-command (&rest args)
   "Run mail-app-cli command with ARGS and return output."
   (with-temp-buffer
-    (let ((exit-code (apply 'call-process mail-app-command nil t nil args)))
+    (let ((exit-code (apply 'call-process mail-app-command nil '(t t) nil args)))
       (if (zerop exit-code)
           (buffer-string)
         (error "Mail app command failed: %s" (buffer-string))))))
@@ -318,7 +318,9 @@ Returns the signature text or nil if none is configured."
            (when (buffer-live-p buf)
              (with-current-buffer buf
                (let ((output (buffer-substring-no-properties (point-min) (point-max))))
-                 (funcall callback output)
+                 (condition-case err
+                     (funcall callback output)
+                   (error (message "Mail-app sentinel callback error: %S" err)))
                  (kill-buffer buf))))))
        (when (string-match-p "exited abnormally" event)
          (let ((buf (process-buffer process)))
