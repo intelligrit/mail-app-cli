@@ -1011,7 +1011,7 @@ each message. When disabled, only subject and sender are read."
                   (goto-char (point-min))
                   (while (re-search-forward "<#/?\(multipart\|part\)[^>]*>" nil t)
                     (replace-match ""))
-                  (buffer-substring-no-properties (point-min) (point-max)))))
+                  (buffer-substring-no-properties (point-min) (point-max))))))
       (setq body-text (string-trim body-text))
 
       (unless to
