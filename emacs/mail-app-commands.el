@@ -1037,7 +1037,14 @@ each message. When disabled, only subject and sender are read."
         (if (> (length attachments) 0)
             (message "Message sent via %s with %d attachment(s)" account (length attachments))
           (message "Message sent via %s" account))
-        (kill-buffer)))))
+        ;; Do not kill buffer here, let message-mode handle it
+        t))))
+
+(defun mail-app--message-send-mail ()
+  "Send mail using mail-app-cli instead of default sendmail."
+  (mail-app-send-message)
+  ;; Let message-mode handle buffer cleanup
+  t)
 
 
 
