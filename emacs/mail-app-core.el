@@ -314,15 +314,19 @@ Returns the signature text or nil if none is configured."
      :sentinel
      (lambda (process event)
        (when (string-match-p "finished" event)
-         (with-current-buffer (process-buffer process)
-           (let ((output (buffer-string)))
-             (kill-buffer)
-             (funcall callback output))))
+         (let ((buf (process-buffer process)))
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (let ((output (buffer-substring-no-properties (point-min) (point-max))))
+                 (funcall callback output)
+                 (kill-buffer buf))))))
        (when (string-match-p "exited abnormally" event)
-         (with-current-buffer (process-buffer process)
-           (let ((error-msg (buffer-string)))
-             (kill-buffer)
-             (message "Mail app command failed: %s" error-msg))))))))
+         (let ((buf (process-buffer process)))
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (let ((error-msg (buffer-substring-no-properties (point-min) (point-max))))
+                 (message "Mail app command failed: %s" error-msg)
+                 (kill-buffer buf))))))))))
 
 
 
