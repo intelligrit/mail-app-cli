@@ -998,18 +998,20 @@ each message. When disabled, only subject and sender are read."
                               (not (or (equal type "text/plain")
                                       (equal type "text/html")))))
                   (push (expand-file-name filename) attachments))))))
+        
         ;; Get the text body by generating without attachments
-        (setq body-text
-              (with-temp-buffer
-                (insert (buffer-substring-no-properties body-start (point-max)))
-                ;; Remove attachment tags but keep text parts
-                (goto-char (point-min))
-                (while (re-search-forward "<#part[^>]+disposition=attachment[^>]*>.*?<#/part>" nil t)
-                  (replace-match ""))
-                (goto-char (point-min))
-                (while (re-search-forward "<#/?\\(multipart\\|part\\)[^>]*>" nil t)
-                  (replace-match ""))
-                (buffer-substring-no-properties (point-min) (point-max)))))
+        (let ((raw-body (buffer-substring-no-properties body-start (point-max))))
+          (setq body-text
+                (with-temp-buffer
+                  (insert raw-body)
+                  ;; Remove attachment tags but keep text parts
+                  (goto-char (point-min))
+                  (while (re-search-forward "<#part[^>]+disposition=attachment[^>]*>.*?<#/part>" nil t)
+                    (replace-match ""))
+                  (goto-char (point-min))
+                  (while (re-search-forward "<#/?\(multipart\|part\)[^>]*>" nil t)
+                    (replace-match ""))
+                  (buffer-substring-no-properties (point-min) (point-max)))))
       (setq body-text (string-trim body-text))
 
       (unless to
