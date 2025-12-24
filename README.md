@@ -10,6 +10,7 @@ A command-line interface for controlling macOS Mail.app. Provides complete scrip
 - Archive, move, delete, flag, and mark messages
 - Send emails
 - Manage attachments
+- Git mail workflow support (mbox import/export for `git format-patch` and `git am`)
 - Fully scriptable - perfect for automation and building GUIs
 
 ## Installation
@@ -368,6 +369,110 @@ go build -o mail-app-cli
 ./mail-app-cli messages list -a "Your Account" -m "INBOX" --limit 5
 ```
 
+## Git Mail Workflow
+
+mail-app-cli supports the git email workflow through mbox format import/export, making it a lightweight alternative to `git send-email` and compatible with `git am` for applying patches.
+
+### Sending Patches (git format-patch → mail-app-cli)
+
+Send patches created with `git format-patch` through Mail.app:
+
+```bash
+# Create patches from recent commits
+git format-patch HEAD~3..HEAD
+
+# Send all patches via Mail.app
+mail-app-cli send --account "Gmail" --from-mbox 0001-*.patch
+
+# Or pipe directly
+git format-patch HEAD~3..HEAD --stdout | mail-app-cli send -a "Gmail" --from-mbox -
+
+# Send a single patch
+mail-app-cli send -a "Gmail" --from-mbox 0001-my-feature.patch
+```
+
+The `--from-mbox` flag reads patch files in mbox format (the format produced by `git format-patch`) and extracts:
+
+- Recipients (To, Cc, Bcc)
+- Subject line
+- Message body
+- Patch content
+
+This makes it a drop-in replacement for `git send-email` but using your configured Mail.app accounts.
+
+### Receiving and Applying Patches (mail-app-cli → git am)
+
+Apply patches received via email to your git repository:
+
+```bash
+# Find patch emails (search for common patch subject patterns)
+mail-app-cli search "[PATCH" -a "Gmail" -m "INBOX"
+
+# Export a single patch and apply it
+mail-app-cli messages export <message-id> -a "Gmail" -m "INBOX" | git am
+
+# Export multiple patches (e.g., a patch series) and apply them
+mail-app-cli messages export <id1> <id2> <id3> -a "Gmail" -m "INBOX" | git am
+
+# Save to a file first
+mail-app-cli messages export <id1> <id2> <id3> -a "Gmail" -m "INBOX" > series.mbox
+git am series.mbox
+```
+
+### Complete Workflow Example
+
+```bash
+# Scenario: You want to send a 3-patch series for review
+
+# 1. Create your patches
+git format-patch HEAD~3..HEAD
+# Creates: 0001-first.patch, 0002-second.patch, 0003-third.patch
+
+# 2. Send them via Mail.app
+mail-app-cli send -a "Gmail" --from-mbox 0001-*.patch
+
+# Recipient receives the patches, reviews them, and replies with feedback
+
+# 3. Find the reply with updated patches
+mail-app-cli search "[PATCH v2" -a "Gmail" -m "INBOX"
+
+# 4. Export and apply the updated patches
+mail-app-cli messages export <msg-id-v2-1> <msg-id-v2-2> <msg-id-v2-3> -a "Gmail" -m "INBOX" | git am
+```
+
+### Searching for Patch Series
+
+Use search and jq to find and organize patch series:
+
+```bash
+# Find all patches for a specific feature
+mail-app-cli search "[PATCH" -a "Gmail" -m "INBOX" | jq '.[] | select(.subject | contains("feature-name"))'
+
+# Find patches by version (v2, v3, etc.)
+mail-app-cli search "[PATCH v2" -a "Gmail" -m "INBOX"
+
+# Export patches in order using jq
+mail-app-cli search "[PATCH v2" -a "Gmail" -m "INBOX" | \
+  jq -r 'sort_by(.subject) | .[].id' | \
+  xargs mail-app-cli messages export -a "Gmail" -m "INBOX" > v2-series.mbox
+
+git am v2-series.mbox
+```
+
+### Git Configuration
+
+To make this workflow even smoother, you can create git aliases:
+
+```bash
+# Add to your ~/.gitconfig or .git/config
+[alias]
+  send-patches = "!f() { git format-patch \"$@\" --stdout | mail-app-cli send -a Gmail --from-mbox -; }; f"
+
+# Usage
+git send-patches HEAD~3..HEAD
+git send-patches origin/main..HEAD
+```
+
 ## Roadmap
 
 Future enhancements:
@@ -376,7 +481,6 @@ Future enhancements:
 - Smart mailbox operations
 - Signatures management
 - VIP contacts
-- Export/import functionality
 - Batch operations
 - IMAP folder synchronization
 - Message threading support

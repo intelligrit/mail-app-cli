@@ -3,7 +3,11 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
+	"time"
 
+	"github.com/emersion/go-mbox"
 	"github.com/robertmeta/mail-app-cli/pkg/mail"
 	"github.com/spf13/cobra"
 )
@@ -199,6 +203,110 @@ var messagesMoveCmd = &cobra.Command{
 	},
 }
 
+var messagesExportCmd = &cobra.Command{
+	Use:   "export [message-id...]",
+	Short: "Export messages in mbox format",
+	Long: `Export one or more messages in mbox format to stdout.
+This is useful for creating patch series that can be applied with git am.
+
+Examples:
+  # Export a single message
+  mail-app-cli messages export <id> -a "Gmail" -m "INBOX" > patch.mbox
+
+  # Export multiple messages (e.g., a patch series)
+  mail-app-cli messages export <id1> <id2> <id3> -a "Gmail" -m "INBOX" > series.mbox
+
+  # Use with git am
+  mail-app-cli messages export <id> -a "Gmail" -m "INBOX" | git am`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if msgAccount == "" || msgMailbox == "" {
+			return fmt.Errorf("both --account and --mailbox are required")
+		}
+
+		client := mail.NewClient()
+		mw := mbox.NewWriter(os.Stdout)
+		defer mw.Close()
+
+		for _, messageID := range args {
+			message, err := client.GetMessageDetailsJSON(msgAccount, msgMailbox, messageID)
+			if err != nil {
+				return fmt.Errorf("failed to get message %s: %w", messageID, err)
+			}
+
+			// Parse the date for mbox format
+			var msgTime time.Time
+			if message.DateSent != "" {
+				msgTime, _ = time.Parse(time.RFC1123, message.DateSent)
+			}
+			if msgTime.IsZero() {
+				msgTime = time.Now()
+			}
+
+			// Create the mbox message
+			from := extractEmailAddress(message.Sender)
+			if from == "" {
+				from = "unknown@example.com"
+			}
+
+			msgWriter, err := mw.CreateMessage(from, msgTime)
+			if err != nil {
+				return fmt.Errorf("failed to create mbox message: %w", err)
+			}
+
+			// Write email headers and body
+			email := formatEmailMessage(message)
+			if _, err := msgWriter.Write([]byte(email)); err != nil {
+				return fmt.Errorf("failed to write message: %w", err)
+			}
+		}
+
+		return nil
+	},
+}
+
+func extractEmailAddress(sender string) string {
+	// Sender format is typically "Name <email@example.com>" or just "email@example.com"
+	if idx := strings.Index(sender, "<"); idx >= 0 {
+		if endIdx := strings.Index(sender, ">"); endIdx > idx {
+			return sender[idx+1 : endIdx]
+		}
+	}
+	return sender
+}
+
+func formatEmailMessage(msg *mail.Message) string {
+	var sb strings.Builder
+
+	// Write headers
+	sb.WriteString(fmt.Sprintf("From: %s\n", msg.Sender))
+
+	if len(msg.ToRecipients) > 0 {
+		sb.WriteString(fmt.Sprintf("To: %s\n", strings.Join(msg.ToRecipients, ", ")))
+	}
+
+	if len(msg.CcRecipients) > 0 {
+		sb.WriteString(fmt.Sprintf("Cc: %s\n", strings.Join(msg.CcRecipients, ", ")))
+	}
+
+	if len(msg.BccRecipients) > 0 {
+		sb.WriteString(fmt.Sprintf("Bcc: %s\n", strings.Join(msg.BccRecipients, ", ")))
+	}
+
+	sb.WriteString(fmt.Sprintf("Subject: %s\n", msg.Subject))
+	sb.WriteString(fmt.Sprintf("Date: %s\n", msg.DateSent))
+	sb.WriteString(fmt.Sprintf("Message-ID: <%s>\n", msg.ID))
+
+	// Blank line between headers and body
+	sb.WriteString("\n")
+
+	// Write body
+	sb.WriteString(msg.Content)
+	sb.WriteString("\n")
+
+	return sb.String()
+}
+
 func init() {
 	messagesCmd.AddCommand(messagesListCmd)
 	messagesCmd.AddCommand(messagesShowCmd)
@@ -207,6 +315,7 @@ func init() {
 	messagesCmd.AddCommand(messagesDeleteCmd)
 	messagesCmd.AddCommand(messagesArchiveCmd)
 	messagesCmd.AddCommand(messagesMoveCmd)
+	messagesCmd.AddCommand(messagesExportCmd)
 
 	// Common flags for all message commands
 	messagesCmd.PersistentFlags().StringVarP(&msgAccount, "account", "a", "", "Account name (required)")
