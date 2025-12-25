@@ -1,13 +1,13 @@
 package cmd
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
+	"mime/quotedprintable"
 	"strings"
-	"time"
+	"io"
 
-	"github.com/emersion/go-mbox"
 	"github.com/robertmeta/mail-app-cli/pkg/mail"
 	"github.com/spf13/cobra"
 )
@@ -225,40 +225,23 @@ Examples:
 		}
 
 		client := mail.NewClient()
-		mw := mbox.NewWriter(os.Stdout)
-		defer mw.Close()
 
-		for _, messageID := range args {
-			message, err := client.GetMessageDetailsJSON(msgAccount, msgMailbox, messageID)
+		for i, messageID := range args {
+			// Get the raw message source to extract patch content
+			source, err := client.GetMessageSource(msgAccount, msgMailbox, messageID)
 			if err != nil {
-				return fmt.Errorf("failed to get message %s: %w", messageID, err)
+				return fmt.Errorf("failed to get message source %s: %w", messageID, err)
 			}
 
-			// Parse the date for mbox format
-			var msgTime time.Time
-			if message.DateSent != "" {
-				msgTime, _ = time.Parse(time.RFC1123, message.DateSent)
-			}
-			if msgTime.IsZero() {
-				msgTime = time.Now()
+			// Extract plain text body from MIME message
+			content := extractPlainTextBody(source)
+
+			// Add separator between multiple messages for git am
+			if i > 0 {
+				fmt.Println()
 			}
 
-			// Create the mbox message
-			from := extractEmailAddress(message.Sender)
-			if from == "" {
-				from = "unknown@example.com"
-			}
-
-			msgWriter, err := mw.CreateMessage(from, msgTime)
-			if err != nil {
-				return fmt.Errorf("failed to create mbox message: %w", err)
-			}
-
-			// Write email headers and body
-			email := formatEmailMessage(message)
-			if _, err := msgWriter.Write([]byte(email)); err != nil {
-				return fmt.Errorf("failed to write message: %w", err)
-			}
+			fmt.Print(content)
 		}
 
 		return nil
@@ -273,6 +256,79 @@ func extractEmailAddress(sender string) string {
 		}
 	}
 	return sender
+}
+
+func extractPlainTextBody(source string) string {
+	// Find the text/plain part in the MIME message
+	textPlainStart := strings.Index(source, "Content-Type: text/plain")
+	if textPlainStart == -1 {
+		// No plain text part, return empty
+		return ""
+	}
+
+	// Find the start of the body content (after headers, at first blank line)
+	searchFrom := source[textPlainStart:]
+	bodyStart := strings.Index(searchFrom, "\n\n")
+	if bodyStart == -1 {
+		bodyStart = strings.Index(searchFrom, "\r\n\r\n")
+	}
+	if bodyStart == -1 {
+		return ""
+	}
+
+	// Find the end of this MIME part (next boundary or next Content-Type)
+	bodyContent := searchFrom[bodyStart:]
+	endMarkers := []string{"\n--", "\r\n--", "\nContent-Type:", "\r\nContent-Type:"}
+	endPos := len(bodyContent)
+	for _, marker := range endMarkers {
+		if pos := strings.Index(bodyContent, marker); pos != -1 && pos < endPos {
+			endPos = pos
+		}
+	}
+
+	bodyContent = bodyContent[:endPos]
+
+	// Check encoding and decode
+	if strings.Contains(searchFrom[:bodyStart], "Content-Transfer-Encoding: base64") {
+		// Decode base64
+		bodyContent = strings.TrimSpace(bodyContent)
+		bodyContent = strings.ReplaceAll(bodyContent, "\r\n", "")
+		bodyContent = strings.ReplaceAll(bodyContent, "\n", "")
+		decoded, err := base64.StdEncoding.DecodeString(bodyContent)
+		if err == nil {
+			bodyContent = string(decoded)
+		}
+	} else if strings.Contains(searchFrom[:bodyStart], "Content-Transfer-Encoding: quoted-printable") {
+		// Decode quoted-printable
+		qpReader := quotedprintable.NewReader(strings.NewReader(bodyContent))
+		decoded, err := io.ReadAll(qpReader)
+		if err == nil {
+			bodyContent = string(decoded)
+		}
+	}
+
+	// Remove format=flowed quote markers (>)
+	lines := strings.Split(bodyContent, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "> ") {
+			lines[i] = line[2:]
+		} else if line == ">" {
+			lines[i] = ""
+		}
+	}
+	bodyContent = strings.Join(lines, "\n")
+
+	// Remove one leading space from doubled spaces (workaround for Mail.app stripping)
+	// We double spaces when sending, so we need to un-double when exporting
+	lines = strings.Split(bodyContent, "\n")
+	for i, line := range lines {
+		if len(line) >= 2 && line[0] == ' ' && line[1] == ' ' {
+			lines[i] = line[1:] // Remove first space, keeping the rest
+		}
+	}
+	bodyContent = strings.Join(lines, "\n")
+
+	return strings.TrimSpace(bodyContent)
 }
 
 func formatEmailMessage(msg *mail.Message) string {

@@ -389,6 +389,11 @@ git format-patch HEAD~3..HEAD --stdout | mail-app-cli send -a "Gmail" --from-mbo
 
 # Send a single patch
 mail-app-cli send -a "Gmail" --from-mbox 0001-my-feature.patch
+
+# Send as attachment (Recommended to prevent corruption)
+# Mail.app may corrupt inline patches by stripping whitespace or adding format=flowed markers.
+# Using --as-attachment ensures the patch file is preserved exactly as generated.
+mail-app-cli send -a "Gmail" --from-mbox 0001-my-feature.patch --as-attachment
 ```
 
 The `--from-mbox` flag reads patch files in mbox format (the format produced by `git format-patch`) and extracts:
@@ -397,6 +402,11 @@ The `--from-mbox` flag reads patch files in mbox format (the format produced by 
 - Subject line
 - Message body
 - Patch content
+
+When using `--as-attachment`:
+- The patch content is saved to a temporary file and attached to the email.
+- The email body includes a note referencing the attachment.
+- This prevents Mail.app from modifying the patch content (e.g., stripping whitespace).
 
 This makes it a drop-in replacement for `git send-email` but using your configured Mail.app accounts.
 

@@ -13,14 +13,16 @@ import (
 )
 
 var (
-	sendAccount     string
-	sendTo          []string
-	sendCc          []string
-	sendBcc         []string
-	sendSubject     string
-	sendBody        string
-	sendAttachments []string
-	sendFromMbox    string
+	sendAccount         string
+	sendTo              []string
+	sendCc              []string
+	sendBcc             []string
+	sendSubject         string
+	sendBody            string
+	sendAttachments     []string
+	sendFromMbox        string
+	sendPreserveSpaces  bool
+	sendAsAttachment    bool
 )
 
 var sendCmd = &cobra.Command{
@@ -34,17 +36,21 @@ Regular mode (specify recipients, subject, body):
   mail-app-cli send -a "Gmail" -t user@example.com -s "With attachments" --body "See attached" --attach ~/file.pdf --attach ~/image.png
 
 Mbox mode (send from mbox format file, e.g., git format-patch output):
-  mail-app-cli send --account "Gmail" --from-mbox 0001-my-patch.patch
-  mail-app-cli send -a "Gmail" --from-mbox - < patches.mbox
-  git format-patch HEAD~3..HEAD --stdout | mail-app-cli send -a "Gmail" --from-mbox -`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if sendAccount == "" {
-			return fmt.Errorf("--account is required")
-		}
+  # Account auto-detected from patch author's email
+  git format-patch HEAD~3..HEAD --stdout | mail-app-cli send --from-mbox -
 
-		// Mbox mode: send from mbox file
+  # Or specify account explicitly
+  mail-app-cli send --account "Gmail" --from-mbox 0001-my-patch.patch
+  mail-app-cli send -a "Gmail" --from-mbox - < patches.mbox`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Mbox mode: send from mbox file (account may be auto-detected)
 		if sendFromMbox != "" {
 			return sendFromMboxFile(sendAccount, sendFromMbox)
+		}
+
+		// Regular mode requires account
+		if sendAccount == "" {
+			return fmt.Errorf("--account is required")
 		}
 
 		// Regular mode: validate required fields
@@ -97,26 +103,83 @@ func sendFromMboxFile(account, mboxPath string) error {
 			return fmt.Errorf("failed to read mbox message: %w", err)
 		}
 
+		// Parse the message to extract headers and body
 		msg, err := netmail.ReadMessage(msgReader)
 		if err != nil {
 			return fmt.Errorf("failed to parse email message: %w", err)
 		}
 
-		// Extract recipients
 		to := parseAddressList(msg.Header.Get("To"))
 		cc := parseAddressList(msg.Header.Get("Cc"))
 		bcc := parseAddressList(msg.Header.Get("Bcc"))
 		subject := msg.Header.Get("Subject")
 
-		// Read body
+		// Auto-detect account from patch From header if not specified
+		sendAccount := account
+		if sendAccount == "" {
+			fromHeader := msg.Header.Get("From")
+			if fromHeader != "" {
+				fromEmail := extractEmailAddress(fromHeader)
+				matchedAccount, err := findAccountByEmail(client, fromEmail)
+				if err != nil {
+					return fmt.Errorf("failed to find account for %s: %w", fromEmail, err)
+				}
+				sendAccount = matchedAccount
+				fmt.Fprintf(os.Stderr, "Auto-detected account: %s (from patch author: %s)\n", sendAccount, fromHeader)
+			} else {
+				return fmt.Errorf("no --account specified and no From header in patch to auto-detect")
+			}
+		}
+
+		// Read only the body (after headers) - this preserves git patch content
 		bodyBytes, err := io.ReadAll(msg.Body)
 		if err != nil {
 			return fmt.Errorf("failed to read message body: %w", err)
 		}
 		body := string(bodyBytes)
 
+		var attachments []string
+		finalBody := body
+
+		if sendAsAttachment {
+			// Create a temp file for the patch
+			safeSubject := strings.Map(func(r rune) rune {
+				if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+					return r
+				}
+				return '_'
+			}, subject)
+			if safeSubject == "" {
+				safeSubject = "patch"
+			}
+			
+			tmpFile, err := os.CreateTemp("", fmt.Sprintf("%s-*.patch", safeSubject))
+			if err != nil {
+				return fmt.Errorf("failed to create temp file: %w", err)
+			}
+			defer os.Remove(tmpFile.Name())
+			defer tmpFile.Close()
+
+			if _, err := tmpFile.Write(bodyBytes); err != nil {
+				return fmt.Errorf("failed to write patch to temp file: %w", err)
+			}
+			
+			attachments = append(attachments, tmpFile.Name())
+			finalBody = fmt.Sprintf("Please see attached patch: %s\n\nOriginal Subject: %s", subject, subject)
+		} else {
+			// Double leading spaces to work around Mail.app stripping single spaces in plain text
+			// Context lines in diffs start with exactly 1 space
+			if !sendPreserveSpaces {
+				finalBody = doubleLeadingSpaces(body)
+			}
+		}
+
 		// Send message
-		err = client.SendMessage(account, subject, body, to, cc, bcc, []string{})
+		if sendPreserveSpaces && !sendAsAttachment {
+			err = client.SendMessagePreserveWhitespace(sendAccount, subject, finalBody, to, cc, bcc, []string{})
+		} else {
+			err = client.SendMessage(sendAccount, subject, finalBody, to, cc, bcc, attachments)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to send message %d: %w", messageCount+1, err)
 		}
@@ -131,6 +194,31 @@ func sendFromMboxFile(account, mboxPath string) error {
 
 	fmt.Fprintf(os.Stderr, "Successfully sent %d message(s)\n", messageCount)
 	return nil
+}
+
+func doubleLeadingSpaces(body string) string {
+	lines := strings.Split(body, "\n")
+	inHunk := false
+
+	for i, line := range lines {
+		// Track if we're inside a diff hunk
+		if strings.HasPrefix(line, "@@") {
+			inHunk = true
+			continue
+		}
+		// End of hunk when we see "diff --git" or another @@ or end of changes
+		if strings.HasPrefix(line, "diff ") || strings.HasPrefix(line, "---") && i > 0 && strings.HasPrefix(lines[i-1], "+++") {
+			inHunk = false
+		}
+
+		// Only double spaces on context lines INSIDE hunks
+		// Context lines are: " unchanged line" (space followed by content)
+		// Don't touch: "+added", "-removed", "@@", or lines outside hunks
+		if inHunk && len(line) > 0 && line[0] == ' ' {
+			lines[i] = " " + line
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 func parseAddressList(headerValue string) []string {
@@ -159,8 +247,26 @@ func parseAddressList(headerValue string) []string {
 	return result
 }
 
+func findAccountByEmail(client *mail.Client, email string) (string, error) {
+	accounts, err := client.GetAccountsJSON()
+	if err != nil {
+		return "", fmt.Errorf("failed to list accounts: %w", err)
+	}
+
+	email = strings.ToLower(strings.TrimSpace(email))
+
+	for _, account := range accounts {
+		accountEmail := strings.ToLower(strings.TrimSpace(account.EmailAddress))
+		if accountEmail == email {
+			return account.Name, nil
+		}
+	}
+
+	return "", fmt.Errorf("no Mail.app account found for email address: %s", email)
+}
+
 func init() {
-	sendCmd.Flags().StringVarP(&sendAccount, "account", "a", "", "Account to send from (required)")
+	sendCmd.Flags().StringVarP(&sendAccount, "account", "a", "", "Account to send from (optional with --from-mbox, auto-detects from patch author)")
 	sendCmd.Flags().StringSliceVarP(&sendTo, "to", "t", []string{}, "To recipients (can be specified multiple times)")
 	sendCmd.Flags().StringSliceVarP(&sendCc, "cc", "c", []string{}, "Cc recipients (can be specified multiple times)")
 	sendCmd.Flags().StringSliceVarP(&sendBcc, "bcc", "b", []string{}, "Bcc recipients (can be specified multiple times)")
@@ -168,6 +274,6 @@ func init() {
 	sendCmd.Flags().StringVarP(&sendBody, "body", "", "", "Email body content")
 	sendCmd.Flags().StringSliceVar(&sendAttachments, "attach", []string{}, "File paths to attach (can be specified multiple times)")
 	sendCmd.Flags().StringVar(&sendFromMbox, "from-mbox", "", "Send from mbox format file (use '-' for stdin)")
-
-	sendCmd.MarkFlagRequired("account")
+	sendCmd.Flags().BoolVar(&sendPreserveSpaces, "preserve-whitespace", false, "Preserve leading whitespace using HTML <pre> tags (useful for code/patches)")
+	sendCmd.Flags().BoolVar(&sendAsAttachment, "as-attachment", false, "Send patch content as an attachment instead of inline body (prevents corruption)")
 }

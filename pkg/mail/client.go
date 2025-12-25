@@ -33,6 +33,14 @@ func escapeAppleScriptString(s string) string {
 	return s
 }
 
+// escapeHTMLContent escapes content for HTML
+func escapeHTMLContent(s string) string {
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
 // runAppleScript executes an AppleScript and returns the output
 func (c *Client) runAppleScript(script string) (string, error) {
 	cmd := exec.Command("osascript", "-e", script)
@@ -383,6 +391,15 @@ try {
 
 // SendMessage sends a new email message
 func (c *Client) SendMessage(accountName, subject, body string, to, cc, bcc, attachments []string) error {
+	return c.sendMessageInternal(accountName, subject, body, to, cc, bcc, attachments, false)
+}
+
+// SendMessagePreserveWhitespace sends a message with whitespace preservation using HTML <pre> tags
+func (c *Client) SendMessagePreserveWhitespace(accountName, subject, body string, to, cc, bcc, attachments []string) error {
+	return c.sendMessageInternal(accountName, subject, body, to, cc, bcc, attachments, true)
+}
+
+func (c *Client) sendMessageInternal(accountName, subject, body string, to, cc, bcc, attachments []string, preserveWhitespace bool) error {
 	// Escape all recipients
 	var toList, ccList, bccList string
 	var escapedTo, escapedCc, escapedBcc []string
@@ -402,6 +419,14 @@ func (c *Client) SendMessage(accountName, subject, body string, to, cc, bcc, att
 	}
 	bccList = strings.Join(escapedBcc, `", "`)
 
+	// Prepare body content
+	bodyContent := body
+	if preserveWhitespace {
+		// Wrap in HTML with <pre> to preserve whitespace
+		htmlBody := fmt.Sprintf("<html><body><pre>%s</pre></body></html>", escapeHTMLContent(body))
+		bodyContent = htmlBody
+	}
+
 	// Build attachment code
 	attachCode := ""
 	if len(attachments) > 0 {
@@ -419,12 +444,34 @@ func (c *Client) SendMessage(accountName, subject, body string, to, cc, bcc, att
 		}
 	}
 
+	// Build script based on whether we need plain text (no HTML alternative)
+	visibility := "false"
+	makePlainTextCmd := ""
+	if !preserveWhitespace {
+		// Need to make message visible temporarily to use System Events
+		visibility = "true"
+		makePlainTextCmd = `
+			activate
+			tell application "System Events"
+				tell process "Mail"
+					try
+						click menu item "Make Plain Text" of menu "Format" of menu bar 1
+					on error
+						-- Ignore if already plain text
+					end try
+				end tell
+			end tell
+			delay 0.1
+			tell newMessage to set visible to false
+`
+	}
+
 	// AppleScript block
 	script := fmt.Sprintf(`
 	tell application "Mail"
 		try
 			set targetAccount to account "%s"
-			set newMessage to make new outgoing message with properties {subject:"%s", content:"%s", visible:false}
+			set newMessage to make new outgoing message with properties {subject:"%s", content:"%s", visible:%s}
 
 			tell newMessage
 				set sender to (item 1 of (email addresses of targetAccount as list))
@@ -445,18 +492,24 @@ func (c *Client) SendMessage(accountName, subject, body string, to, cc, bcc, att
 					end repeat
 				end if
 %s
-			send
+			end tell
+
+%s
+			tell newMessage
+				send
 			end tell
 			return "Success"
 		on error errMsg
 			return "Error: " & errMsg
 		end try
 	end tell
-`, escapeAppleScriptString(accountName), escapeAppleScriptString(subject), escapeAppleScriptString(body),
+`, escapeAppleScriptString(accountName), escapeAppleScriptString(subject), escapeAppleScriptString(bodyContent),
+		visibility,
 		toList,
 		ccList, ccList,
 		bccList, bccList,
-		attachCode)
+		attachCode,
+		makePlainTextCmd)
 
 	_, err := c.runAppleScript(script)
 	return err
@@ -823,6 +876,50 @@ JSON.stringify(result);
 	}
 
 	return &message, nil
+}
+
+// GetMessageSource retrieves the raw MIME source of a message
+func (c *Client) GetMessageSource(accountName, mailboxName, messageID string) (string, error) {
+	script := fmt.Sprintf(`
+const mail = Application('Mail');
+let result = null;
+
+try {
+	const accounts = mail.accounts();
+	for (let i = 0; i < accounts.length; i++) {
+		const acc = accounts[i];
+		if (acc.name() === '%s') {
+			const mailboxes = acc.mailboxes();
+			for (let j = 0; j < mailboxes.length; j++) {
+				const mbox = mailboxes[j];
+				if (mbox.name() === '%s') {
+					const messages = mbox.messages();
+					for (let k = 0; k < messages.length; k++) {
+						const msg = messages[k];
+						if (String(msg.id()) === '%s') {
+							result = msg.source();
+							break;
+						}
+					}
+					break;
+				}
+			}
+			break;
+		}
+	}
+} catch (e) {
+	// Handle errors gracefully
+}
+
+result;
+`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
+
+	output, err := c.runJXA(script)
+	if err != nil {
+		return "", err
+	}
+
+	return output, nil
 }
 
 // ArchiveMessage moves a message to the Archive mailbox
