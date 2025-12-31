@@ -237,3 +237,30 @@ To disable automatic mark-as-read, add to your init.el:
 - `mail-app-core.el`: Added `mail-app-mark-as-read-on-view` defcustom
 - `mail-app-commands.el`: Added automatic mark-as-read logic to `mail-app-view-message`
 
+## Update: Mark Entire Mailbox as Read (2025-12-31)
+
+Added ability to mark all unread messages in a mailbox as read from the mailboxes view.
+
+### Features Added
+
+- **Bulk Mark as Read:** Press `T` on any mailbox to mark all unread messages as read
+- **Works from Mailboxes View:** No need to open the mailbox first
+- **Confirmation:** Prompts before marking (e.g., "Mark all 523 unread messages in Spam as read?")
+- **Progress Feedback:** Shows status and automatically refreshes when complete
+- **Perfect for:** Spam, trash, archive, or any mailbox you want to clear
+
+### Usage
+
+1. Navigate to mailboxes view (`M-x mail-app-list-mailboxes`)
+2. Move cursor to mailbox with unread messages
+3. Press `T` (Shift+t)
+4. Confirm the action
+5. Wait for completion and see updated unread count
+
+### Files Modified
+
+- `mail-app-core.el`: Added `T` keybinding to mailboxes mode map
+- `mail-app-commands.el`: Implemented `mail-app-mark-mailbox-as-read` function
+- `mail-app-evil.el`: Added Evil mode keybinding
+- `mail-app-display.el`: Updated command help text in mailboxes view
+
