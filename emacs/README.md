@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="mail-app-wrap logo" width="400"/>
+</p>
+
 # mail-app-wrap
 
 Emacs interface for the mail-app CLI tool, providing a full-featured interface to macOS Mail.app from within Emacs.
