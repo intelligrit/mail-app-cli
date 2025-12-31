@@ -19,9 +19,10 @@
 
 (defun mail-app--format-accounts (accounts)
   "Format ACCOUNTS for display."
-  ;; Initialize sort method from default if not set
-  (unless mail-app-accounts-sort-method
-    (setq mail-app-accounts-sort-method mail-app-default-accounts-sort-method))
+  ;; Initialize sort method from default on first run
+  (unless mail-app--sort-initialized
+    (setq mail-app-accounts-sort-method mail-app-default-accounts-sort-method)
+    (setq mail-app--sort-initialized t))
   (let ((inhibit-read-only t)
         (sorted-accounts (if (eq mail-app-accounts-sort-method 'alpha)
                              (sort (copy-sequence accounts)
@@ -56,9 +57,10 @@
 
 (defun mail-app--format-mailboxes (mailboxes)
   "Format MAILBOXES for display."
-  ;; Initialize sort method from default if not set
-  (unless mail-app-mailboxes-sort-method
-    (setq mail-app-mailboxes-sort-method mail-app-default-mailboxes-sort-method))
+  ;; Initialize sort method from default on first run
+  (unless mail-app--sort-initialized
+    (setq mail-app-mailboxes-sort-method mail-app-default-mailboxes-sort-method)
+    (setq mail-app--sort-initialized t))
   (let* ((inhibit-read-only t)
          (sorted-mailboxes (mail-app--sort-mailboxes mailboxes mail-app-mailboxes-sort-method))
          (single-account (and mail-app-current-account
@@ -103,12 +105,11 @@
 
 (defun mail-app--format-messages (messages)
   "Format MESSAGES for display."
-  ;; Initialize sort settings from defaults if not set
-  (unless mail-app-message-sort-key
-    (setq mail-app-message-sort-key mail-app-default-messages-sort-method))
-  (when (and (not (local-variable-p 'mail-app-message-sort-reverse))
-             (null mail-app-message-sort-reverse))
-    (setq mail-app-message-sort-reverse mail-app-default-messages-sort-reverse))
+  ;; Initialize sort settings from defaults on first run
+  (unless mail-app--sort-initialized
+    (setq mail-app-message-sort-key mail-app-default-messages-sort-method)
+    (setq mail-app-message-sort-reverse mail-app-default-messages-sort-reverse)
+    (setq mail-app--sort-initialized t))
   (let* ((inhibit-read-only t)
          ;; Check if these are search results - simpler: just check if current mailbox is a search
          (is-search (and mail-app-current-mailbox

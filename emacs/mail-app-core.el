@@ -295,7 +295,7 @@ Options:
 
 
 
-(defvar-local mail-app-message-sort-key 'date
+(defvar-local mail-app-message-sort-key nil
   "Current sort key for messages: 'date, 'subject, 'from, or 'unread.")
 
 
@@ -305,13 +305,18 @@ Options:
 
 
 
-(defvar-local mail-app-accounts-sort-method 'natural
+(defvar-local mail-app-accounts-sort-method nil
   "Current sort method for accounts: 'natural or 'alpha.")
 
 
 
-(defvar-local mail-app-mailboxes-sort-method 'smart
+(defvar-local mail-app-mailboxes-sort-method nil
   "Current sort method for mailboxes: 'default, 'smart, 'unread, or 'alpha.")
+
+
+
+(defvar-local mail-app--sort-initialized nil
+  "Flag to track if sort settings have been initialized from defaults.")
 
 
 
