@@ -386,20 +386,25 @@ Returns the signature text or nil if none is configured."
              (when (string-match-p "finished" event)
                (let ((buf (process-buffer process)))
                  (when (buffer-live-p buf)
-                   (with-current-buffer buf
-                     (let ((output (buffer-substring-no-properties (point-min) (point-max))))
-                       (condition-case err
-                           (funcall callback output)
-                         (error (message "Mail-app sentinel callback error: %S" err)))
+                   ;; Extract output FIRST while buffer is alive
+                   (let ((output (with-current-buffer buf
+                                   (buffer-substring-no-properties (point-min) (point-max)))))
+                     ;; THEN call callback with the extracted string
+                     (condition-case err
+                         (funcall callback output)
+                       (error (message "Mail-app callback error: %S\nCommand: %S" err args)))
+                     ;; FINALLY kill the buffer
+                     (when (buffer-live-p buf)
                        (kill-buffer buf))))))
              (when (string-match-p "exited abnormally" event)
                (let ((buf (process-buffer process)))
                  (when (buffer-live-p buf)
-                   (with-current-buffer buf
-                     (let ((error-msg (buffer-substring-no-properties (point-min) (point-max))))
-                       (message "Mail app command failed: %s" error-msg)
+                   (let ((error-msg (with-current-buffer buf
+                                      (buffer-substring-no-properties (point-min) (point-max)))))
+                     (message "Mail app command failed: %s" error-msg)
+                     (when (buffer-live-p buf)
                        (kill-buffer buf)))))))
-         (error (message "Mail-app sentinel CRASH: %S" sentinel-err)))))))
+         (error (message "Mail-app sentinel CRASH: %S\nCommand: %S" sentinel-err args)))))))
 
 
 
