@@ -261,37 +261,35 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
           (when (yes-or-no-p (format "Mark all %d unread messages in %s as read? " unread name))
             (mail-app--speak (format "Marking %d messages as read" unread) 'select-object)
             (let ((buf (current-buffer)))
-              ;; Fetch all unread messages and mark them
-              (mail-app--run-command-async
-               (lambda (output)
-                 (let ((messages (mail-app--parse-messages-output output)))
-                   (if (null messages)
-                       (progn
-                         (message "No unread messages found")
-                         (mail-app--speak "No unread messages found" 'task-done))
-                     ;; Mark each unread message as read
-                     (let ((total (length messages))
-                           (count 0))
-                       (dolist (msg messages)
-                         (let ((id (plist-get msg :id)))
-                           (mail-app--run-command-async
-                            (lambda (output)
+              ;; Fetch all unread messages and mark them synchronously
+              (let* ((output (mail-app--run-command "messages" "list" "-a" account "-m" name "-u"))
+                     (messages (mail-app--parse-messages-output output)))
+                (if (null messages)
+                    (progn
+                      (message "No unread messages found")
+                      (mail-app--speak "No unread messages found" 'task-done))
+                  ;; Mark each unread message as read synchronously
+                  (let ((total (length messages))
+                        (count 0))
+                    (dolist (msg messages)
+                      (let ((id (plist-get msg :id)))
+                        (condition-case err
+                            (progn
+                              (mail-app--run-command "messages" "mark" id
+                                                     "-a" account
+                                                     "-m" name
+                                                     "--read=true")
                               (setq count (1+ count))
-                              (when (= count total)
-                                ;; All done, refresh the mailbox list
-                                (when (buffer-live-p buf)
-                                  (with-current-buffer buf
-                                    (mail-app-refresh)))
-                                (message "Marked %d messages as read" total)
-                                (mail-app--speak (format "Marked %d messages as read" total) 'task-done)))
-                            "messages" "mark" id
-                            "-a" account
-                            "-m" name
-                            "--read=true")))))))
-               "messages" "list"
-               "-a" account
-               "-m" name
-               "--unread"))))))))
+                              (when (zerop (mod count 10))
+                                (message "Marked %d/%d messages as read..." count total)))
+                          (error
+                           (message "Failed to mark message %s: %s" id err)))))
+                    ;; All done, refresh the mailbox list
+                    (when (buffer-live-p buf)
+                      (with-current-buffer buf
+                        (mail-app-refresh)))
+                    (message "Marked %d messages as read" count)
+                    (mail-app--speak (format "Marked %d messages as read" count) 'task-done))))))))))
 
 
 
