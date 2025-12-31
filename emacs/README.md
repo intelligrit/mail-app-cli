@@ -182,6 +182,10 @@ Available customization options:
 - `mail-app-command`: Path to mail-app-cli executable
 - `mail-app-default-account`: Default account to use (or nil to prompt)
 - `mail-app-message-limit`: Maximum number of messages to display
+- `mail-app-mark-as-read-on-view`: Auto-mark messages as read when viewing (default: t)
+- `mail-app-default-accounts-sort-method`: Default sort for accounts list
+- `mail-app-default-mailboxes-sort-method`: Default sort for mailboxes list
+- `mail-app-default-messages-sort-method`: Default sort for messages list
 
 ## Troubleshooting
 
