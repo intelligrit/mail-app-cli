@@ -289,7 +289,7 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                       (with-current-buffer buf
                         (mail-app-refresh)))
                     (message "Marked %d messages as read" count)
-                    (mail-app--speak (format "Marked %d messages as read" count) 'task-done))))))))))
+                    (mail-app--speak (format "Marked %d messages as read" count) 'task-done)))))))))))
 
 
 
