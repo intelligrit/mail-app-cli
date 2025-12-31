@@ -30,10 +30,8 @@
                                              (plist-get b :name))))
                            accounts)))
     (erase-buffer)
-    (insert (propertize "Mail.app Accounts\n" 'face 'bold))
+    (insert (propertize "Account List\n" 'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] mailboxes  [c] compose  [s] search  [S] search all\n")
-    (insert "          [o] toggle sort  [J] jump to Mail.app  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-40s %-10s  Sort: %s\n"
                     "ACCOUNT" "EMAIL" "ENABLED"
                     (if (eq mail-app-accounts-sort-method 'alpha) "alphabetical" "natural")))
@@ -53,7 +51,7 @@
         (when enabled
           (put-text-property start (point) 'face 'default))))
     (goto-char (point-min))
-    (forward-line 6))) 
+    (forward-line 4))) 
 
 
 (defun mail-app--format-mailboxes (mailboxes)
@@ -66,15 +64,11 @@
          (single-account (and mail-app-current-account
                              (not (string= mail-app-current-account "")))))
     (erase-buffer)
-    (insert (propertize (format "Mail.app Mailboxes%s\n"
-                                (if single-account
-                                    (format ": %s" mail-app-current-account)
-                                  ""))
+    (insert (propertize (if single-account
+                            (format "%s / Mailboxes\n" mail-app-current-account)
+                          "Account / Mailboxes\n")
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] messages  [T] mark all read  [c] compose  [s] search\n")
-    (insert "          [S] search all  [o] toggle sort  [J] jump to Mail.app\n")
-    (insert "          [g/r] refresh  [q] quit  [?] help\n\n")
     (if single-account
         (progn
           (insert (format "%-60s %8s %8s\n"
@@ -104,9 +98,8 @@
         (when (> unread 0)
           (put-text-property start (point) 'face 'bold))))
     (goto-char (point-min))
-    (forward-line 6))) 
+    (forward-line 4)))
 
- ; Skip title, blank, commands (2 lines), blank, header
 
 (defun mail-app--format-messages (messages)
   "Format MESSAGES for display."
@@ -133,17 +126,12 @@
                                   ('read "unread")) ; backwards compatibility
                                 (if mail-app-message-sort-reverse " ↓" " ↑"))))
     (erase-buffer)
-    (insert (propertize (format "Mail.app Messages: %s/%s%s\n"
-                                (or mail-app-current-account "Search Results")
+    (insert (propertize (format "%s / %s / Messages%s\n"
+                                (or mail-app-current-account "Search")
                                 (or mail-app-current-mailbox "All")
                                 sort-indicator)
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] read  [c] compose  [f] flag  [d] delete  [a] archive\n")
-    (insert "          [t] toggle read  [C] toggle content  [o] sort  [u] unread\n")
-    (insert "          [s] search  [S] search all  [J] jump  [N] more  [g/r] refresh\n")
-    (insert "Marking:  [m] mark  [M] unmark  [U] unmark-all  [x] delete marked\n")
-    (insert "          [,a] archive  [,f] flag  [,r] read  [,u] unread  [?] help\n\n")
     (if is-search
         ;; Search results: show ACCOUNT and MAILBOX columns
         (progn
@@ -231,9 +219,7 @@
                ((not read)
                 (put-text-property start line-end 'face 'bold))))))))
     (goto-char (point-min))
-    (forward-line 9))  ; Skip title, blank, command lines (5), blank, header 
-
- ; Skip title, blank, command lines (5), blank, header
+    (forward-line 4)))
 
 (defun mail-app--format-message-view (message-id account mailbox)
   "Format message view for MESSAGE-ID in ACCOUNT and MAILBOX based on view mode."
@@ -243,13 +229,10 @@
          (view-mode (or mail-app-current-view-mode 'plain))
          (details (mail-app--parse-message-details output)))
     (erase-buffer)
-    (insert (propertize (format "Mail.app Message [%s view]: %s/%s\n"
-                                (symbol-name view-mode) account mailbox)
+    (insert (propertize (format "%s / %s / Message [%s]\n"
+                                account mailbox (symbol-name view-mode))
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [r] reply  [R] reply-all  [TAB] cycle view  [S-TAB] cycle reverse\n")
-    (insert "          [f] flag  [d] delete  [a] archive  [t] unread  [c] compose\n")
-    (insert "          [J] jump to Mail.app  [g] refresh  [q] quit  [?] help\n\n")
     (insert (make-string 80 ?=) "\n\n")
     (cond
      ((eq view-mode 'plain)
@@ -307,7 +290,7 @@
                                   'mail-app-attachment-data attachment
                                   'emacspeak-speak speech-text))))))))
     (goto-char (point-min))
-    (forward-line 7)))
+    (forward-line 4)))
 
 
 (provide 'mail-app-display)

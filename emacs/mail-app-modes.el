@@ -124,8 +124,12 @@
 ;;; Major modes
 
 (define-derived-mode mail-app-accounts-mode special-mode "Mail-App-Accounts"
-  "Major mode for viewing mail-app accounts.
+  "Major mode for viewing Mail.app accounts.
 
+This mode displays all configured Mail.app accounts with their email
+addresses and enabled status. Use RET to view mailboxes for an account.
+
+Key bindings:
 \\{mail-app-accounts-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines t)
@@ -134,8 +138,19 @@
 
 
 (define-derived-mode mail-app-mailboxes-mode special-mode "Mail-App-Mailboxes"
-  "Major mode for viewing mail-app mailboxes.
+  "Major mode for viewing Mail.app mailboxes.
 
+This mode displays mailboxes with their unread and total message counts.
+Mailboxes with unread messages are shown in bold. Use RET to view messages
+in a mailbox, or T to mark all unread messages in a mailbox as read.
+
+Sort methods can be toggled with 'o' to cycle through:
+  - default: As returned by mail-app-cli
+  - smart: INBOX first, then by unread count, then alphabetical
+  - unread: Pure unread count (descending)
+  - alpha: Alphabetical by mailbox name
+
+Key bindings:
 \\{mail-app-mailboxes-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines t)
@@ -144,8 +159,24 @@
 
 
 (define-derived-mode mail-app-messages-mode special-mode "Mail-App-Messages"
-  "Major mode for viewing mail-app messages.
+  "Major mode for viewing messages in a Mail.app mailbox.
 
+This mode displays messages with their subject, sender, and read/flagged status.
+Unread messages are shown in bold. Press RET to view a message.
+
+Message actions:
+  f - flag/unflag   d - delete   a - archive   t - toggle read/unread
+  ! - mark as junk  v - move to another mailbox
+
+Bulk operations (mark messages with 'm', then):
+  x   - delete marked    ,a - archive marked   ,f - flag marked
+  ,j  - junk marked      ,v - move marked      ,r - mark as read
+  ,u  - mark as unread   U  - unmark all
+
+Sort methods (toggle with 'o' and 'O' to reverse):
+  date, subject, from, unread
+
+Key bindings:
 \\{mail-app-messages-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines t)
@@ -154,8 +185,21 @@
 
 
 (define-derived-mode mail-app-message-view-mode special-mode "Mail-App-Message"
-  "Major mode for viewing a single mail-app message.
+  "Major mode for viewing a single Mail.app message.
 
+This mode displays the full content of an email message. Use TAB to cycle
+through different view modes: plain (basic headers), full (all headers),
+and attachments (list attachments).
+
+Message actions:
+  r - reply          R - reply all      F - forward
+  f - flag/unflag    d - delete         a - archive
+  t - mark as unread
+
+In attachments view:
+  RET or s - save attachment at point
+
+Key bindings:
 \\{mail-app-message-view-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines nil)

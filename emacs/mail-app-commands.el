@@ -432,13 +432,10 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                  (view-mode (or mail-app-current-view-mode 'plain))
                  (details (mail-app--parse-message-details output)))
              (erase-buffer)
-             (insert (propertize (format "Mail.app Message [%s view]: %s/%s\n"
-                                        (symbol-name view-mode) account mailbox)
+             (insert (propertize (format "%s / %s / Message [%s]\n"
+                                        account mailbox (symbol-name view-mode))
                                 'face 'bold))
              (insert "\n")
-             (insert "Commands: [r] reply  [R] reply-all  [TAB] cycle view  [S-TAB] cycle reverse\n")
-             (insert "          [f] flag  [d] delete  [a] archive  [t] unread  [c] compose\n")
-             (insert "          [J] jump to Mail.app  [g] refresh  [q] quit  [?] help\n\n")
              (insert (make-string 80 ?=) "\n\n")
              (cond
               ((eq view-mode 'plain)
@@ -476,7 +473,7 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
               ((eq view-mode 'attachments)
                (insert "Loading attachments...\n")))
              (goto-char (point-min))
-             (forward-line 7)
+             (forward-line 4)
              (mail-app--speak "Message loaded" 'task-done)
              ;; Automatically mark as read if enabled and message is unread
              (when (and mail-app-mark-as-read-on-view
