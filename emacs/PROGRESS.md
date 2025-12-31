@@ -110,3 +110,107 @@ The blocking issue has been resolved by fully embracing the modular structure.
 
 ### Verification:
 Users can reload `mail-app` or restart Emacs. The features should work as expected.
+
+## Update: Bug Fixes & Refactoring (2025-12-22)
+
+### Resolved Issues
+1.  **"Args out of range" when sending email:**
+    *   **Cause:** The buffer was being killed by `mail-app-send-message` while `message-mode` still needed it for post-send cleanup.
+    *   **Fix:** Removed `(kill-buffer)` from `mail-app-send-message`.
+    *   **Fix:** Restored missing `mail-app--message-send-mail` function in `mail-app-commands.el`.
+    *   **Fix:** Corrected message body extraction logic to properly handle temp buffers.
+
+2.  **"End of file during parsing" (Syntax Error):**
+    *   **Cause:** A missing closing parenthesis was introduced in `mail-app-core.el` during a previous edit.
+    *   **Fix:** Restored balanced parentheses.
+
+3.  **"End of file during parsing" (Sentinel Race):**
+    *   **Action:** Added `condition-case` to the sentinel in `mail-app-core.el` to catch errors during callback execution and print helpful debug messages instead of crashing.
+
+4.  **CLI Output Pollution:**
+    *   **Action:** Updated `mail-app-cli` to print success messages (e.g., "Message deleted") to `stderr` instead of `stdout` to prevent interfering with JSON parsing in the wrapper.
+
+### Current Logic Checks
+*   **Unit Tests:** Created a test suite in `tests/` using ERT to verify:
+    *   Compilation of all files.
+    *   Async command execution and buffer cleanup.
+    *   Message body extraction logic.
+
+### Ongoing Work
+*   **Fixing "Invalid function: evil-define-key":**
+    *   **Problem:** `mail-app-evil.el` is likely being byte-compiled without `evil` loaded, causing the `evil-define-key` macro to be compiled as a function call. At runtime, this fails.
+    *   **Plan:** Refactor `mail-app.el` to only load `mail-app-evil.el` inside `(with-eval-after-load 'evil ...)`. Update `mail-app-evil.el` to explicitly `(require 'evil)` to ensure macros are available during compilation.
+
+## Update: Evil bindings restored (2025-12-23)
+
+- Added an explicit `(eval-and-compile (require 'evil ...))` guard in `mail-app-evil.el` so the `evil-define-key` macro exists during byte-compilation, preventing the `Invalid function: evil-define-key` error that broke RET/other bindings in Evil.
+- Dropped the nested `with-eval-after-load` wrapper, since `mail-app.el` already delays loading until after Evil is available; hooks and key definitions now run as soon as the module loads.
+- Force `evil-normalize-keymaps` only when it is defined, ensuring the updated keymaps (including RET to drill into accounts/mailboxes/messages) are active immediately.
+- Result: pressing RET in the listings works again under Evil, and byte-compiling the wrapper no longer produces broken .elc files.
+
+## Update: Force newer loader for Evil (2025-12-23)
+
+- Wrapped the optional `mail-app-evil` require with `(let ((load-prefer-newer t)) ...)` inside `mail-app.el` so Emacs always reloads the fresher `.el` when it is newer than a stale `.elc`.
+- This avoids the lingering `Invalid function: evil-define-key` that popped up when an outdated byte-compiled file was still on disk—now the updated source wins without asking users to delete .elc files manually.
+
+## Update: RET remaps for Evil (2025-12-23)
+
+- Added `[remap evil-ret]` entries in `mail-app-evil.el` for every mode so Evil’s default `RET` command is redirected to the mail-app actions (view mailboxes/messages, open a message, save an attachment).
+- This bypasses whichever package rebinds `RET` in normal state and guarantees Enter activates the row under point inside Evil buffers.
+
+## Update: Purged stale bytecode (2025-12-23)
+
+- Deleted the committed `mail-app*.elc` artifacts so Emacs can only load the current source; these files were perpetually older than their `.el` counterparts and kept resurrecting `evil-define-key` errors.
+- Added a file-local eval in `mail-app.el` to set `load-prefer-newer` during load, ensuring future byte-compiled leftovers on a developer machine never take precedence over fresher source.
+
+## Update: Deferred Evil setup & disabled .elc (2025-12-23)
+
+- Marked `mail-app-evil.el` with `no-byte-compile: t` and wrapped all Evil state/keymap work in a single `mail-app-evil--setup` function that runs immediately if Evil is already loaded or via `with-eval-after-load` otherwise.
+- This stops Emacs/autocompile from producing stale `.elc` files and ensures we only touch `evil-define-key` after Evil itself is available, eliminating the recurring `Invalid function: evil-define-key` crashes.
+
+## Update: Scripted Evil RET check (2025-12-23)
+
+- Added `dev/check-evil-bindings.el`, a standalone batch script that requires Evil, loads `mail-app`, and errors out if any mode lacks the `[remap evil-ret]` entry or if pressing RET resolves to the wrong command. Run it with `emacs -Q --batch -L . -l dev/check-evil-bindings.el` inside `mail-app-wrap` to verify the bindings in your actual configuration.
+
+## Update: Persistent Sort Methods (2025-12-31)
+
+Added configurable and persistent sort methods for accounts, mailboxes, and messages with automatic saving to custom-file.
+
+### Features Added
+
+1. **Accounts Sorting:**
+   - Sort methods: `natural` (setup order) or `alpha` (alphabetical)
+   - Keybinding: `o` to toggle between sort methods
+   - Saves preference via `mail-app-default-accounts-sort-method`
+
+2. **Mailboxes Sorting:**
+   - Sort methods:
+     - `default` - As returned by mail-app-cli
+     - `smart` - INBOX first, then by unread count, then alphabetical (default)
+     - `unread` - Pure unread count (descending)
+     - `alpha` - Alphabetical by mailbox name
+   - Keybinding: `o` to cycle through sort methods
+   - Saves preference via `mail-app-default-mailboxes-sort-method`
+
+3. **Messages Sorting:**
+   - Sort methods: `date`, `subject`, `from`, `unread`
+   - Keybindings: `o` to cycle sort key, `O` to reverse order
+   - Saves preferences via:
+     - `mail-app-default-messages-sort-method`
+     - `mail-app-default-messages-sort-reverse`
+
+### Implementation Details
+
+- All sort preferences persist across Emacs sessions using `customize-save-variable`
+- Buffer-local sort state is initialized from defcustom defaults on first display
+- Renamed message sort key from `'read` to `'unread` for clarity (with backward compatibility)
+- Updated Evil mode integration with mailboxes sort keybinding
+- Sort method indicators shown in buffer headers
+
+### Files Modified
+
+- `mail-app-core.el`: Added defcustom variables, buffer-local state, and enhanced sort functions
+- `mail-app-display.el`: Initialize sort state from defaults in format functions
+- `mail-app-commands.el`: Updated sort commands to save preferences
+- `mail-app-evil.el`: Added mailboxes sort keybinding to Evil mode
+
