@@ -128,6 +128,13 @@ Options:
 
 
 
+(defcustom mail-app-mark-as-read-on-view t
+  "If non-nil, automatically mark messages as read when viewing them."
+  :type 'boolean
+  :group 'mail-app)
+
+
+
 ;;; Keymaps
 
 (defvar mail-app-accounts-mode-map

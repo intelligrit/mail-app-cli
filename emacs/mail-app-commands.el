@@ -429,7 +429,18 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                (insert "Loading attachments...\n")))
              (goto-char (point-min))
              (forward-line 7)
-             (mail-app--speak "Message loaded" 'task-done)))))
+             (mail-app--speak "Message loaded" 'task-done)
+             ;; Automatically mark as read if enabled and message is unread
+             (when (and mail-app-mark-as-read-on-view
+                       (not (plist-get details :read)))
+               (mail-app--run-command-async
+                (lambda (output)
+                  ;; Silently mark as read, no refresh needed in view buffer
+                  nil)
+                "messages" "mark" message-id
+                "-a" account
+                "-m" mailbox
+                "--read" "true"))))))
      "messages" "show" message-id "-a" account "-m" mailbox)))
 
 
