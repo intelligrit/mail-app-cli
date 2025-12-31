@@ -647,6 +647,7 @@ SORT-METHOD can be:
 (defun mail-app--update-speech-text-for-line (message marked)
   "Update the emacspeak-speak property for the current line based on MESSAGE and MARKED status."
   (let* ((flagged (plist-get message :flagged))
+         (read (plist-get message :read))
          (subject (plist-get message :subject))
          (from (plist-get message :from))
          (content (plist-get message :content))
@@ -658,22 +659,26 @@ SORT-METHOD can be:
                          (let ((account (plist-get message :account))
                                (mailbox (plist-get message :mailbox)))
                            (if (and content (not (string-empty-p content)) mail-app-read-message-content)
-                               (format "%s%s from %s in %s %s. Message content: %s"
+                               (format "%s%s%s from %s in %s %s. Message content: %s"
                                       (if marked "Marked. " "")
+                                      (if (not read) "Unread. " "")
                                       subject from account mailbox
                                       (truncate-string-to-width content 300 nil nil "..."))
-                             (format "%s%s from %s in %s %s"
+                             (format "%s%s%s from %s in %s %s"
                                     (if marked "Marked. " "")
+                                    (if (not read) "Unread. " "")
                                     subject from account mailbox)))
                        ;; Regular list - no account/mailbox
                        (if (and content (not (string-empty-p content)) mail-app-read-message-content)
-                           (format "%s%s%s from %s. Message content: %s"
+                           (format "%s%s%s%s from %s. Message content: %s"
                                   (if marked "Marked. " "")
+                                  (if (not read) "Unread. " "")
                                   (if flagged "Flagged. " "")
                                   subject from
                                   (truncate-string-to-width content 300 nil nil "..."))
-                         (format "%s%s%s from %s"
+                         (format "%s%s%s%s from %s"
                                 (if marked "Marked. " "")
+                                (if (not read) "Unread. " "")
                                 (if flagged "Flagged. " "")
                                 subject from)))))
     (put-text-property (line-beginning-position) line-end 'emacspeak-speak speech-text)))

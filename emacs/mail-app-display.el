@@ -155,12 +155,14 @@
                                  (truncate-string-to-width subject 40 nil nil "...")
                                  (truncate-string-to-width from 30 nil nil "...")))
                    (speech-text (if (and content (not (string-empty-p content)))
-                                   (format "%s%s from %s in %s %s. Message content: %s"
+                                   (format "%s%s%s from %s in %s %s. Message content: %s"
                                           (if marked "Marked. " "")
+                                          (if (not read) "Unread. " "")
                                           subject from account mailbox
                                           (truncate-string-to-width content 300 nil nil "..."))
-                                 (format "%s%s from %s in %s %s"
+                                 (format "%s%s%s from %s in %s %s"
                                         (if marked "Marked. " "")
+                                        (if (not read) "Unread. " "")
                                         subject from account mailbox)))
                    (start (point)))
               (insert line)
@@ -189,20 +191,22 @@
                  (content (plist-get message :content))
                  (marked (member id mail-app-marked-messages))
                  (mark-str (if marked ">" " "))
-                 (flag-str (concat (if read "✓" " ") (if flagged "⚑" " ")))
+                 (flag-str (concat (if read " " "●") (if flagged "⚑" " ")))
                  (line (format "%-2s %-4s %-60s %-40s\n"
                                mark-str
                                flag-str
                                (truncate-string-to-width subject 60 nil nil "...")
                                (truncate-string-to-width from 40 nil nil "...")))
                  (speech-text (if (and content (not (string-empty-p content)))
-                                 (format "%s%s%s from %s. Message content: %s"
+                                 (format "%s%s%s%s from %s. Message content: %s"
                                         (if marked "Marked. " "")
+                                        (if (not read) "Unread. " "")
                                         (if flagged "Flagged. " "")
                                         subject from
                                         (truncate-string-to-width content 300 nil nil "..."))
-                               (format "%s%s%s from %s"
+                               (format "%s%s%s%s from %s"
                                       (if marked "Marked. " "")
+                                      (if (not read) "Unread. " "")
                                       (if flagged "Flagged. " "")
                                       subject from)))
                  (start (point)))
