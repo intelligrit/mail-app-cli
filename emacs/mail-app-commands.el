@@ -287,7 +287,7 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                             "messages" "mark" id
                             "-a" account
                             "-m" name
-                            "--read" "true")))))))
+                            "--read=true")))))))
                "messages" "list"
                "-a" account
                "-m" name
@@ -485,7 +485,7 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                 "messages" "mark" message-id
                 "-a" account
                 "-m" mailbox
-                "--read" "true"))))))
+                "--read=true"))))))
      "messages" "show" message-id "-a" account "-m" mailbox)))
 
 
@@ -830,7 +830,7 @@ each message. When disabled, only subject and sender are read."
          "messages" "mark" id
          "-a" mail-app-current-account
          "-m" mail-app-current-mailbox
-         "--read" (if new-state "true" "false"))))))
+         (format "--read=%s" (if new-state "true" "false")))))))
 
 
 
@@ -878,7 +878,7 @@ each message. When disabled, only subject and sender are read."
     (mail-app--run-command "messages" "mark" mail-app-current-message-id
                            "-a" mail-app-current-account
                            "-m" mail-app-current-mailbox
-                           "--read" "false")
+                           "--read=false")
     (message "Message marked as unread")))
 
 
@@ -1356,7 +1356,7 @@ each message. When disabled, only subject and sender are read."
                 (mail-app--run-command "messages" "mark" id
                                        "-a" account
                                        "-m" mailbox
-                                       "--read" "true")
+                                       "--read=true")
                 (setq count (1+ count))
                 (when (zerop (mod count 5))
                   (message "Marked %d/%d as read..." count total))))
@@ -1392,7 +1392,7 @@ each message. When disabled, only subject and sender are read."
                 (mail-app--run-command "messages" "mark" id
                                        "-a" account
                                        "-m" mailbox
-                                       "--read" "false")
+                                       "--read=false")
                 (setq count (1+ count))
                 (when (zerop (mod count 5))
                   (message "Marked %d/%d as unread..." count total))))
