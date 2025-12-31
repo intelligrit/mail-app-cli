@@ -264,3 +264,35 @@ Added ability to mark all unread messages in a mailbox as read from the mailboxe
 - `mail-app-evil.el`: Added Evil mode keybinding
 - `mail-app-display.el`: Updated command help text in mailboxes view
 
+## Update: UI Cleanup and Navigation Improvements (2025-12-31)
+
+Removed noisy command menus and improved navigation clarity for hardcore Emacs users.
+
+### Changes Made
+
+1. **Removed Command Menus:** Eliminated multi-line command help from all buffer headers
+2. **Added Breadcrumb Navigation:** Clear hierarchy showing current location:
+   - `Account List` - accounts view
+   - `Account / Mailboxes` - mailboxes view
+   - `Account / Mailbox / Messages` - messages view
+   - `Account / Mailbox / Message [view]` - message view
+
+3. **Improved Mode Documentation:** Enhanced docstrings for all major modes:
+   - Detailed functionality descriptions
+   - Automatic keybinding documentation (via `describe-mode` with `?`)
+   - Documents sort methods, bulk operations, and view modes
+   - Works automatically with which-key package
+
+### Benefits
+
+- Cleaner, less noisy UI
+- Context always visible via breadcrumb
+- Full help available via standard `?` key (`describe-mode`)
+- No special support needed for which-key (works automatically)
+
+### Files Modified
+
+- `mail-app-display.el`: Removed command menus, added breadcrumb headers
+- `mail-app-commands.el`: Updated async message view headers
+- `mail-app-modes.el`: Enhanced all major mode docstrings
+
