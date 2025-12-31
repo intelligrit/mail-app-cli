@@ -138,11 +138,14 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
   (interactive)
   (unless mail-app-accounts-data
     (error "No accounts to sort"))
-  (setq mail-app-accounts-sort-alphabetical (not mail-app-accounts-sort-alphabetical))
-  (mail-app--format-accounts mail-app-accounts-data)
-  (mail-app--speak (format "Sorted by %s order"
-                          (if mail-app-accounts-sort-alphabetical "alphabetical" "natural"))
-                  'select-object))
+  (let ((next (if (eq mail-app-accounts-sort-method 'alpha) 'natural 'alpha)))
+    (setq mail-app-accounts-sort-method next)
+    (setq-default mail-app-default-accounts-sort-method next)
+    (customize-save-variable 'mail-app-default-accounts-sort-method next)
+    (mail-app--format-accounts mail-app-accounts-data)
+    (mail-app--speak (format "Sorted by %s order"
+                            (if (eq next 'alpha) "alphabetical" "natural"))
+                    'select-object)))
 
 
 
@@ -203,6 +206,32 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                      (mail-app--format-mailboxes mailboxes)
                      (mail-app--speak (format "Loaded %d mailboxes" (length mailboxes)) 'task-done)))))
              args))))
+
+
+
+(defun mail-app-toggle-mailboxes-sort ()
+  "Cycle through mailbox sort options: default, smart, unread, alphabetical."
+  (interactive)
+  (unless mail-app-mailboxes-data
+    (error "No mailboxes to sort"))
+  (let* ((current mail-app-mailboxes-sort-method)
+         (next (pcase current
+                 ('default 'smart)
+                 ('smart 'unread)
+                 ('unread 'alpha)
+                 ('alpha 'default)
+                 (_ 'smart))))
+    (setq mail-app-mailboxes-sort-method next)
+    (setq-default mail-app-default-mailboxes-sort-method next)
+    (customize-save-variable 'mail-app-default-mailboxes-sort-method next)
+    (mail-app--format-mailboxes mail-app-mailboxes-data)
+    (let ((description (pcase next
+                        ('default "default order")
+                        ('smart "smart (INBOX, then unread)")
+                        ('unread "unread count")
+                        ('alpha "alphabetical")
+                        (_ "unknown"))))
+      (mail-app--speak (format "Sorted by %s" description) 'select-object))))
 
 
 
@@ -564,11 +593,16 @@ each message. When disabled, only subject and sender are read."
          (next (pcase current
                  ('date 'subject)
                  ('subject 'from)
-                 ('from 'read)
-                 ('read 'date)
+                 ('from 'unread)
+                 ('unread 'date)
+                 ('read 'date) ; backwards compatibility
                  (_ 'date))))
     (setq mail-app-message-sort-key next)
     (setq mail-app-message-sort-reverse nil)
+    (setq-default mail-app-default-messages-sort-method next)
+    (setq-default mail-app-default-messages-sort-reverse nil)
+    (customize-save-variable 'mail-app-default-messages-sort-method next)
+    (customize-save-variable 'mail-app-default-messages-sort-reverse nil)
     (mail-app--format-messages mail-app-messages-data)
     (mail-app--speak (format "Sorted by %s" (symbol-name next)) 'select-object)))
 
@@ -580,6 +614,8 @@ each message. When disabled, only subject and sender are read."
   (unless mail-app-messages-data
     (error "No messages to sort"))
   (setq mail-app-message-sort-reverse (not mail-app-message-sort-reverse))
+  (setq-default mail-app-default-messages-sort-reverse mail-app-message-sort-reverse)
+  (customize-save-variable 'mail-app-default-messages-sort-reverse mail-app-message-sort-reverse)
   (mail-app--format-messages mail-app-messages-data)
   (mail-app--speak (format "Sort %s" (if mail-app-message-sort-reverse "reversed" "normal")) 'select-object))
 

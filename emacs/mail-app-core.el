@@ -80,6 +80,54 @@ Example:
 
 
 
+(defcustom mail-app-default-accounts-sort-method 'natural
+  "Default sort method for accounts list.
+Options:
+  'natural - As returned by mail-app-cli (setup order)
+  'alpha   - Alphabetical by account name"
+  :type '(choice (const :tag "Natural (setup order)" natural)
+                 (const :tag "Alphabetical" alpha))
+  :group 'mail-app)
+
+
+
+(defcustom mail-app-default-mailboxes-sort-method 'smart
+  "Default sort method for mailboxes list.
+Options:
+  'default - As returned by mail-app-cli
+  'smart   - INBOX first, then by unread count, then alphabetical
+  'unread  - Pure unread count (descending)
+  'alpha   - Alphabetical by mailbox name"
+  :type '(choice (const :tag "Default (as returned by CLI)" default)
+                 (const :tag "Smart (INBOX first, then unread)" smart)
+                 (const :tag "Unread count" unread)
+                 (const :tag "Alphabetical" alpha))
+  :group 'mail-app)
+
+
+
+(defcustom mail-app-default-messages-sort-method 'date
+  "Default sort method for messages list.
+Options:
+  'date    - Sort by date received
+  'subject - Sort by subject
+  'from    - Sort by sender
+  'unread  - Unread messages first, then by date"
+  :type '(choice (const :tag "Date" date)
+                 (const :tag "Subject" subject)
+                 (const :tag "Sender" from)
+                 (const :tag "Unread first" unread))
+  :group 'mail-app)
+
+
+
+(defcustom mail-app-default-messages-sort-reverse nil
+  "If non-nil, reverse the default message sort order."
+  :type 'boolean
+  :group 'mail-app)
+
+
+
 ;;; Keymaps
 
 (defvar mail-app-accounts-mode-map
@@ -110,6 +158,7 @@ Example:
     (define-key map (kbd "r") 'mail-app-refresh)
     (define-key map (kbd "s") 'mail-app-search)
     (define-key map (kbd "S") 'mail-app-search-all)
+    (define-key map (kbd "o") 'mail-app-toggle-mailboxes-sort)
     (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "J") 'mail-app-jump-to-mail-app)
     (define-key map (kbd "q") 'quit-window)
@@ -238,7 +287,7 @@ Example:
 
 
 (defvar-local mail-app-message-sort-key 'date
-  "Current sort key for messages: 'date, 'subject, 'from, or 'read.")
+  "Current sort key for messages: 'date, 'subject, 'from, or 'unread.")
 
 
 
@@ -247,8 +296,13 @@ Example:
 
 
 
-(defvar-local mail-app-accounts-sort-alphabetical nil
-  "If non-nil, sort accounts alphabetically. Otherwise use natural (setup) order.")
+(defvar-local mail-app-accounts-sort-method 'natural
+  "Current sort method for accounts: 'natural or 'alpha.")
+
+
+
+(defvar-local mail-app-mailboxes-sort-method 'smart
+  "Current sort method for mailboxes: 'default, 'smart, 'unread, or 'alpha.")
 
 
 
@@ -313,22 +367,25 @@ Returns the signature text or nil if none is configured."
      :command (cons mail-app-command args)
      :sentinel
      (lambda (process event)
-       (when (string-match-p "finished" event)
-         (let ((buf (process-buffer process)))
-           (when (buffer-live-p buf)
-             (with-current-buffer buf
-               (let ((output (buffer-substring-no-properties (point-min) (point-max))))
-                 (condition-case err
-                     (funcall callback output)
-                   (error (message "Mail-app sentinel callback error: %S" err)))
-                 (kill-buffer buf))))))
-       (when (string-match-p "exited abnormally" event)
-         (let ((buf (process-buffer process)))
-           (when (buffer-live-p buf)
-             (with-current-buffer buf
-               (let ((error-msg (buffer-substring-no-properties (point-min) (point-max))))
-                 (message "Mail app command failed: %s" error-msg)
-                 (kill-buffer buf))))))))))
+       (condition-case sentinel-err
+           (progn
+             (when (string-match-p "finished" event)
+               (let ((buf (process-buffer process)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (let ((output (buffer-substring-no-properties (point-min) (point-max))))
+                       (condition-case err
+                           (funcall callback output)
+                         (error (message "Mail-app sentinel callback error: %S" err)))
+                       (kill-buffer buf))))))
+             (when (string-match-p "exited abnormally" event)
+               (let ((buf (process-buffer process)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (let ((error-msg (buffer-substring-no-properties (point-min) (point-max))))
+                       (message "Mail app command failed: %s" error-msg)
+                       (kill-buffer buf)))))))
+         (error (message "Mail-app sentinel CRASH: %S" sentinel-err)))))))
 
 
 
@@ -445,15 +502,17 @@ Returns the signature text or nil if none is configured."
                                      ('date (plist-get a :date))
                                      ('subject (downcase (or (plist-get a :subject) "")))
                                      ('from (downcase (or (plist-get a :from) "")))
-                                     ('read (if (plist-get a :read) "1" "0"))
+                                     ('unread (if (plist-get a :read) "1" "0"))
+                                     ('read (if (plist-get a :read) "1" "0")) ; backwards compatibility
                                      (_ (plist-get a :date))))
                              (val-b (pcase sort-key
                                      ('date (plist-get b :date))
                                      ('subject (downcase (or (plist-get b :subject) "")))
                                      ('from (downcase (or (plist-get b :from) "")))
-                                     ('read (if (plist-get b :read) "1" "0"))
+                                     ('unread (if (plist-get b :read) "1" "0"))
+                                     ('read (if (plist-get b :read) "1" "0")) ; backwards compatibility
                                      (_ (plist-get b :date)))))
-                         (if (eq sort-key 'read)
+                         (if (memq sort-key '(unread read))
                              (string< val-a val-b)
                            (string< (format "%s" val-a) (format "%s" val-b))))))))
     (if reverse (nreverse sorted) sorted)))
@@ -508,18 +567,40 @@ Optionally play audio ICON."
 
  ; Skip title, blank, commands (2 lines), blank, header
 
-(defun mail-app--sort-mailboxes (mailboxes)
-  "Sort MAILBOXES with INBOX first, then alphabetically by name."
-  (sort mailboxes
-        (lambda (a b)
-          (let ((name-a (plist-get a :name))
-                (name-b (plist-get b :name)))
-            (cond
-             ;; INBOX always comes first (case-insensitive)
-             ((string-equal (upcase name-a) "INBOX") t)
-             ((string-equal (upcase name-b) "INBOX") nil)
-             ;; Otherwise sort alphabetically
-             (t (string< name-a name-b)))))))
+(defun mail-app--sort-mailboxes (mailboxes sort-method)
+  "Sort MAILBOXES according to SORT-METHOD.
+SORT-METHOD can be:
+  'default - As returned by mail-app-cli (no sorting)
+  'smart   - INBOX first, then by unread count, then alphabetical
+  'unread  - Pure unread count (descending)
+  'alpha   - Alphabetical by mailbox name"
+  (pcase sort-method
+    ('default mailboxes)
+    ('alpha
+     (sort mailboxes
+           (lambda (a b)
+             (string< (plist-get a :name) (plist-get b :name)))))
+    ('unread
+     (sort mailboxes
+           (lambda (a b)
+             (> (or (plist-get a :unread) 0)
+                (or (plist-get b :unread) 0)))))
+    ('smart
+     (sort mailboxes
+           (lambda (a b)
+             (let ((name-a (plist-get a :name))
+                   (name-b (plist-get b :name))
+                   (unread-a (or (plist-get a :unread) 0))
+                   (unread-b (or (plist-get b :unread) 0)))
+               (cond
+                ;; INBOX always comes first (case-insensitive)
+                ((string-equal (upcase name-a) "INBOX") t)
+                ((string-equal (upcase name-b) "INBOX") nil)
+                ;; Then sort by unread count (descending)
+                ((not (= unread-a unread-b)) (> unread-a unread-b))
+                ;; Finally alphabetically
+                (t (string< name-a name-b)))))))
+    (_ mailboxes)))
 
 
 

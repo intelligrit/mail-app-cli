@@ -19,8 +19,11 @@
 
 (defun mail-app--format-accounts (accounts)
   "Format ACCOUNTS for display."
+  ;; Initialize sort method from default if not set
+  (unless mail-app-accounts-sort-method
+    (setq mail-app-accounts-sort-method mail-app-default-accounts-sort-method))
   (let ((inhibit-read-only t)
-        (sorted-accounts (if mail-app-accounts-sort-alphabetical
+        (sorted-accounts (if (eq mail-app-accounts-sort-method 'alpha)
                              (sort (copy-sequence accounts)
                                    (lambda (a b)
                                      (string< (plist-get a :name)
@@ -33,7 +36,7 @@
     (insert "          [o] toggle sort  [J] jump to Mail.app  [g/r] refresh  [q] quit  [?] help\n\n")
     (insert (format "%-30s %-40s %-10s  Sort: %s\n"
                     "ACCOUNT" "EMAIL" "ENABLED"
-                    (if mail-app-accounts-sort-alphabetical "alphabetical" "natural")))
+                    (if (eq mail-app-accounts-sort-method 'alpha) "alphabetical" "natural")))
     (insert (make-string 85 ?-) "\n")
     (dolist (account sorted-accounts)
       (let* ((name (plist-get account :name))
@@ -55,8 +58,11 @@
 
 (defun mail-app--format-mailboxes (mailboxes)
   "Format MAILBOXES for display."
+  ;; Initialize sort method from default if not set
+  (unless mail-app-mailboxes-sort-method
+    (setq mail-app-mailboxes-sort-method mail-app-default-mailboxes-sort-method))
   (let* ((inhibit-read-only t)
-         (sorted-mailboxes (mail-app--sort-mailboxes mailboxes))
+         (sorted-mailboxes (mail-app--sort-mailboxes mailboxes mail-app-mailboxes-sort-method))
          (single-account (and mail-app-current-account
                              (not (string= mail-app-current-account "")))))
     (erase-buffer)
@@ -103,6 +109,12 @@
 
 (defun mail-app--format-messages (messages)
   "Format MESSAGES for display."
+  ;; Initialize sort settings from defaults if not set
+  (unless mail-app-message-sort-key
+    (setq mail-app-message-sort-key mail-app-default-messages-sort-method))
+  (when (and (not (local-variable-p 'mail-app-message-sort-reverse))
+             (null mail-app-message-sort-reverse))
+    (setq mail-app-message-sort-reverse mail-app-default-messages-sort-reverse))
   (let* ((inhibit-read-only t)
          ;; Check if these are search results - simpler: just check if current mailbox is a search
          (is-search (and mail-app-current-mailbox
@@ -116,7 +128,8 @@
                                   ('date "date")
                                   ('subject "subject")
                                   ('from "from")
-                                  ('read "unread"))
+                                  ('unread "unread")
+                                  ('read "unread")) ; backwards compatibility
                                 (if mail-app-message-sort-reverse " ↓" " ↑"))))
     (erase-buffer)
     (insert (propertize (format "Mail.app Messages: %s/%s%s\n"
