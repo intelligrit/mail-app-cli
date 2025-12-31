@@ -72,8 +72,9 @@
                                   ""))
                         'face 'bold))
     (insert "\n")
-    (insert "Commands: [RET] messages  [c] compose  [s] search  [S] search all\n")
-    (insert "          [J] jump to Mail.app  [g/r] refresh  [q] quit  [?] help\n\n")
+    (insert "Commands: [RET] messages  [T] mark all read  [c] compose  [s] search\n")
+    (insert "          [S] search all  [o] toggle sort  [J] jump to Mail.app\n")
+    (insert "          [g/r] refresh  [q] quit  [?] help\n\n")
     (if single-account
         (progn
           (insert (format "%-60s %8s %8s\n"

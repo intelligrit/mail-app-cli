@@ -247,6 +247,54 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
 
 
 
+(defun mail-app-mark-mailbox-as-read ()
+  "Mark all unread messages in the mailbox at point as read."
+  (interactive)
+  (let ((mailbox (mail-app--get-mailbox-at-point)))
+    (if (not mailbox)
+        (message "No mailbox at point")
+      (let* ((account (plist-get mailbox :account))
+             (name (plist-get mailbox :name))
+             (unread (plist-get mailbox :unread)))
+        (if (zerop unread)
+            (message "No unread messages in %s" name)
+          (when (yes-or-no-p (format "Mark all %d unread messages in %s as read? " unread name))
+            (mail-app--speak (format "Marking %d messages as read" unread) 'select-object)
+            (let ((buf (current-buffer)))
+              ;; Fetch all unread messages and mark them
+              (mail-app--run-command-async
+               (lambda (output)
+                 (let ((messages (mail-app--parse-messages-output output)))
+                   (if (null messages)
+                       (progn
+                         (message "No unread messages found")
+                         (mail-app--speak "No unread messages found" 'task-done))
+                     ;; Mark each unread message as read
+                     (let ((total (length messages))
+                           (count 0))
+                       (dolist (msg messages)
+                         (let ((id (plist-get msg :id)))
+                           (mail-app--run-command-async
+                            (lambda (output)
+                              (setq count (1+ count))
+                              (when (= count total)
+                                ;; All done, refresh the mailbox list
+                                (when (buffer-live-p buf)
+                                  (with-current-buffer buf
+                                    (mail-app-refresh)))
+                                (message "Marked %d messages as read" total)
+                                (mail-app--speak (format "Marked %d messages as read" total) 'task-done)))
+                            "messages" "mark" id
+                            "-a" account
+                            "-m" name
+                            "--read" "true")))))))
+               "messages" "list"
+               "-a" account
+               "-m" name
+               "--unread"))))))))
+
+
+
 (defun mail-app-refresh ()
   "Refresh the current view (with cache refresh)."
   (interactive)
