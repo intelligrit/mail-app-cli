@@ -214,3 +214,26 @@ Added configurable and persistent sort methods for accounts, mailboxes, and mess
 - `mail-app-commands.el`: Updated sort commands to save preferences
 - `mail-app-evil.el`: Added mailboxes sort keybinding to Evil mode
 
+## Update: Automatic Mark-as-Read (2025-12-31)
+
+Added automatic mark-as-read functionality when viewing messages.
+
+### Features Added
+
+- **Automatic Mark-as-Read:** When opening a message, it's automatically marked as read in Mail.app
+- **Configurable:** Control via `mail-app-mark-as-read-on-view` defcustom (default: `t`)
+- **Silent Operation:** Marking happens in background without refreshing the view buffer
+- **Smart:** Only marks messages that are currently unread
+
+### Configuration
+
+To disable automatic mark-as-read, add to your init.el:
+```elisp
+(setq mail-app-mark-as-read-on-view nil)
+```
+
+### Files Modified
+
+- `mail-app-core.el`: Added `mail-app-mark-as-read-on-view` defcustom
+- `mail-app-commands.el`: Added automatic mark-as-read logic to `mail-app-view-message`
+
