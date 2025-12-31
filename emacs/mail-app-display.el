@@ -217,7 +217,7 @@
                (marked
                 (put-text-property start line-end 'face 'highlight))
                ((not read)
-                (put-text-property start line-end 'face 'bold))))))))
+                (put-text-property start line-end 'face 'bold)))))))
     (goto-char (point-min))
     (forward-line 4)))
 
