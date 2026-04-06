@@ -17,14 +17,69 @@ func NewClient() *Client {
 	return &Client{}
 }
 
-// escapeJSString escapes a string for use in JavaScript single-quoted strings
+// escapeJSString escapes a string for use in JavaScript single-quoted strings.
+// Non-ASCII characters (including emoji) are encoded as \uXXXX sequences to
+// avoid encoding issues when passing strings through osascript.
 func escapeJSString(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\") // Escape backslashes first
-	s = strings.ReplaceAll(s, "'", "\\'")   // Escape single quotes
-	s = strings.ReplaceAll(s, "\n", "\\n")  // Escape newlines
-	s = strings.ReplaceAll(s, "\r", "\\r")  // Escape carriage returns
-	s = strings.ReplaceAll(s, "\t", "\\t")  // Escape tabs
-	return s
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r == '\\':
+			b.WriteString("\\\\")
+		case r == '\'':
+			b.WriteString("\\'")
+		case r == '\n':
+			b.WriteString("\\n")
+		case r == '\r':
+			b.WriteString("\\r")
+		case r == '\t':
+			b.WriteString("\\t")
+		case r > 0xFFFF:
+			// Encode as a surrogate pair for characters outside BMP (e.g. most emoji)
+			r -= 0x10000
+			hi := 0xD800 + (r>>10)&0x3FF
+			lo := 0xDC00 + r&0x3FF
+			fmt.Fprintf(&b, "\\u%04X\\u%04X", hi, lo)
+		case r >= 0x80:
+			fmt.Fprintf(&b, "\\u%04X", r)
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// isInboxName returns true if the mailbox name refers to the built-in INBOX.
+func isInboxName(name string) bool {
+	return strings.EqualFold(name, "inbox")
+}
+
+// jxaResolveMailbox returns JXA code that assigns the target mailbox to a
+// variable named varName. For INBOX it uses acc.inbox(); for all other
+// mailboxes it uses acc.mailboxes.byName().
+func jxaResolveMailbox(varName, accVar, mailboxName string) string {
+	if isInboxName(mailboxName) {
+		return fmt.Sprintf("const %s = %s.inbox();", varName, accVar)
+	}
+	return fmt.Sprintf("const %s = %s.mailboxes.byName('%s');", varName, accVar, escapeJSString(mailboxName))
+}
+
+// jxaFindMailboxInLoop returns a JXA function definition that can be used
+// to find a mailbox by name within an account, handling INBOX specially.
+// Call the returned function as: findMailbox(acc, 'INBOX')
+func jxaFindMailboxHelper() string {
+	return `
+function findMailbox(acc, mboxName) {
+	if (mboxName.toLowerCase() === 'inbox') {
+		try { return acc.inbox(); } catch(e) { return null; }
+	}
+	const mailboxes = acc.mailboxes();
+	for (let j = 0; j < mailboxes.length; j++) {
+		if (mailboxes[j].name() === mboxName) return mailboxes[j];
+	}
+	return null;
+}
+`
 }
 
 // escapeAppleScriptString escapes a string for use in AppleScript double-quoted strings
@@ -265,11 +320,12 @@ func (c *Client) MarkMessageAsRead(accountName, mailboxName, messageID string, r
 		readStatus = "false"
 	}
 
+	mboxResolve := jxaResolveMailbox("mbox", "acc", mailboxName)
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	%s
 	const messages = mbox.messages();
 
 	let targetMsg = null;
@@ -289,7 +345,7 @@ try {
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID), readStatus)
+`, escapeJSString(accountName), mboxResolve, escapeJSString(messageID), readStatus)
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -308,11 +364,12 @@ func (c *Client) FlagMessage(accountName, mailboxName, messageID string, flagged
 		flagStatus = "false"
 	}
 
+	mboxResolve := jxaResolveMailbox("mbox", "acc", mailboxName)
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	%s
 	const messages = mbox.messages();
 
 	let targetMsg = null;
@@ -332,7 +389,7 @@ try {
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID), flagStatus)
+`, escapeJSString(accountName), mboxResolve, escapeJSString(messageID), flagStatus)
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -346,11 +403,12 @@ try {
 
 // DeleteMessage moves a message to trash
 func (c *Client) DeleteMessage(accountName, mailboxName, messageID string) error {
+	mboxResolve := jxaResolveMailbox("mbox", "acc", mailboxName)
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	%s
 	const messages = mbox.messages();
 
 	let targetMsg = null;
@@ -370,7 +428,7 @@ try {
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
+`, escapeJSString(accountName), mboxResolve, escapeJSString(messageID))
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -657,6 +715,21 @@ try {
 	for (let i = 0; i < accounts.length; i++) {
 		const acc = accounts[i];
 		if (acc.name() === '%s') {
+			// Include the built-in INBOX which is not part of acc.mailboxes()
+			try {
+				const inbox = acc.inbox();
+				if (inbox) {
+					const inboxMsgs = inbox.messages();
+					result.push({
+						name: 'INBOX',
+						unreadCount: inbox.unreadCount(),
+						totalCount: inboxMsgs ? inboxMsgs.length : 0,
+						account: acc.name()
+					});
+				}
+			} catch (e) {
+				// INBOX may not be available for all accounts
+			}
 			const mailboxes = acc.mailboxes();
 			for (let j = 0; j < mailboxes.length; j++) {
 				const mbox = mailboxes[j];
@@ -733,16 +806,15 @@ func (c *Client) GetMessagesJSON(accountName, mailboxName string, limit, offset 
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 const result = [];
+%s
 
 try {
 	const accounts = mail.accounts();
 	for (let i = 0; i < accounts.length; i++) {
 		const acc = accounts[i];
 		if (acc.name() === '%s') {
-			const mailboxes = acc.mailboxes();
-			for (let j = 0; j < mailboxes.length; j++) {
-				const mbox = mailboxes[j];
-				if (mbox.name() === '%s') {
+			const mbox = findMailbox(acc, '%s');
+			if (mbox) {
 					let messages = mbox.messages();
 					// Apply filters BEFORE iterating for performance
 					%s
@@ -768,15 +840,13 @@ try {
 								flagged: msg.flaggedStatus(),
 								messageSize: 0,
 								%s
-							mailbox: mbox.name(),
+							mailbox: '%s',
 								account: acc.name()
 							});
 						} catch (e) {
 							// Skip messages that cause errors
 						}
 					}
-					break;
-				}
 			}
 			break;
 		}
@@ -786,7 +856,7 @@ try {
 }
 
 JSON.stringify(result);
-`, escapeJSString(accountName), escapeJSString(mailboxName), unreadFilter, flaggedFilter, sinceFilter, offsetClause, limitClause, limit, limit, limit, contentField)
+`, jxaFindMailboxHelper(), escapeJSString(accountName), escapeJSString(mailboxName), unreadFilter, flaggedFilter, sinceFilter, offsetClause, limitClause, limit, limit, limit, contentField, escapeJSString(mailboxName))
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -806,58 +876,55 @@ func (c *Client) GetMessageDetailsJSON(accountName, mailboxName, messageID strin
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 let result = null;
+%s
 
 try {
 	const accounts = mail.accounts();
 	for (let i = 0; i < accounts.length; i++) {
 		const acc = accounts[i];
 		if (acc.name() === '%s') {
-			const mailboxes = acc.mailboxes();
-			for (let j = 0; j < mailboxes.length; j++) {
-				const mbox = mailboxes[j];
-				if (mbox.name() === '%s') {
-					const messages = mbox.messages();
-					for (let k = 0; k < messages.length; k++) {
-						const msg = messages[k];
-						if (String(msg.id()) === '%s') {
-							const toRecipients = [];
-							const toRecs = msg.toRecipients();
-							for (let t = 0; t < toRecs.length; t++) {
-								toRecipients.push(toRecs[t].address());
-							}
-
-							const ccRecipients = [];
-							const ccRecs = msg.ccRecipients();
-							for (let c = 0; c < ccRecs.length; c++) {
-								ccRecipients.push(ccRecs[c].address());
-							}
-
-							const bccRecipients = [];
-							const bccRecs = msg.bccRecipients();
-							for (let b = 0; b < bccRecs.length; b++) {
-								bccRecipients.push(bccRecs[b].address());
-							}
-
-							result = {
-								id: String(msg.id()),
-								subject: msg.subject() || '',
-								sender: msg.sender() || '',
-								dateReceived: (msg.dateReceived() || new Date()).toString(),
-								dateSent: (msg.dateSent() || new Date()).toString(),
-								read: msg.readStatus(),
-								flagged: msg.flaggedStatus(),
-								messageSize: msg.messageSize(),
-								content: msg.content() || '',
-								mailbox: mbox.name(),
-								account: acc.name(),
-								toRecipients: toRecipients,
-								ccRecipients: ccRecipients,
-								bccRecipients: bccRecipients
-							};
-							break;
+			const mbox = findMailbox(acc, '%s');
+			if (mbox) {
+				const messages = mbox.messages();
+				for (let k = 0; k < messages.length; k++) {
+					const msg = messages[k];
+					if (String(msg.id()) === '%s') {
+						const toRecipients = [];
+						const toRecs = msg.toRecipients();
+						for (let t = 0; t < toRecs.length; t++) {
+							toRecipients.push(toRecs[t].address());
 						}
+
+						const ccRecipients = [];
+						const ccRecs = msg.ccRecipients();
+						for (let c = 0; c < ccRecs.length; c++) {
+							ccRecipients.push(ccRecs[c].address());
+						}
+
+						const bccRecipients = [];
+						const bccRecs = msg.bccRecipients();
+						for (let b = 0; b < bccRecs.length; b++) {
+							bccRecipients.push(bccRecs[b].address());
+						}
+
+						result = {
+							id: String(msg.id()),
+							subject: msg.subject() || '',
+							sender: msg.sender() || '',
+							dateReceived: (msg.dateReceived() || new Date()).toString(),
+							dateSent: (msg.dateSent() || new Date()).toString(),
+							read: msg.readStatus(),
+							flagged: msg.flaggedStatus(),
+							messageSize: msg.messageSize(),
+							content: msg.content() || '',
+							mailbox: '%s',
+							account: acc.name(),
+							toRecipients: toRecipients,
+							ccRecipients: ccRecipients,
+							bccRecipients: bccRecipients
+						};
+						break;
 					}
-					break;
 				}
 			}
 			break;
@@ -868,7 +935,7 @@ try {
 }
 
 JSON.stringify(result);
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
+`, jxaFindMailboxHelper(), escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID), escapeJSString(mailboxName))
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -885,11 +952,12 @@ JSON.stringify(result);
 
 // ArchiveMessage moves a message to the Archive mailbox
 func (c *Client) ArchiveMessage(accountName, mailboxName, messageID string) error {
+	mboxResolve := jxaResolveMailbox("mbox", "acc", mailboxName)
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	%s
 	const messages = mbox.messages();
 
 	let targetMsg = null;
@@ -923,7 +991,7 @@ try {
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
+`, escapeJSString(accountName), mboxResolve, escapeJSString(messageID))
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -937,11 +1005,13 @@ try {
 
 // MoveMessage moves a message to a different mailbox
 func (c *Client) MoveMessage(accountName, sourceMailbox, messageID, targetMailbox string) error {
+	srcResolve := jxaResolveMailbox("sourceMbox", "acc", sourceMailbox)
+	destResolve := jxaResolveMailbox("destMbox", "acc", targetMailbox)
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 try {
 	const acc = mail.accounts.byName('%s');
-	const sourceMbox = acc.mailboxes.byName('%s');
+	%s
 	const messages = sourceMbox.messages();
 
 	let targetMsg = null;
@@ -955,14 +1025,14 @@ try {
 	if (!targetMsg) {
 		'Error: Message not found';
 	} else {
-		const destMbox = acc.mailboxes.byName('%s');
+		%s
 		targetMsg.mailbox = destMbox;
 		'Success';
 	}
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(sourceMailbox), escapeJSString(messageID), escapeJSString(targetMailbox))
+`, escapeJSString(accountName), srcResolve, escapeJSString(messageID), destResolve)
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -979,39 +1049,36 @@ func (c *Client) GetAttachmentsJSON(accountName, mailboxName, messageID string) 
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 const result = [];
+%s
 
 try {
 	const accounts = mail.accounts();
 	for (let i = 0; i < accounts.length; i++) {
 		const acc = accounts[i];
 		if (acc.name() === '%s') {
-			const mailboxes = acc.mailboxes();
-			for (let j = 0; j < mailboxes.length; j++) {
-				const mbox = mailboxes[j];
-				if (mbox.name() === '%s') {
-					const messages = mbox.messages();
-					for (let k = 0; k < messages.length; k++) {
-						const msg = messages[k];
-						if (String(msg.id()) === '%s') {
-							const attachments = msg.mailAttachments();
-							for (let a = 0; a < attachments.length; a++) {
-								const att = attachments[a];
-								let mimeType = 'unknown';
-								try {
-									mimeType = att.mimeType() || 'unknown';
-								} catch (e) {
-									// mimeType() sometimes fails in Mail.app
-								}
-								result.push({
-									name: att.name(),
-									fileSize: att.fileSize(),
-								mimeType: mimeType
-								});
+			const mbox = findMailbox(acc, '%s');
+			if (mbox) {
+				const messages = mbox.messages();
+				for (let k = 0; k < messages.length; k++) {
+					const msg = messages[k];
+					if (String(msg.id()) === '%s') {
+						const attachments = msg.mailAttachments();
+						for (let a = 0; a < attachments.length; a++) {
+							const att = attachments[a];
+							let mimeType = 'unknown';
+							try {
+								mimeType = att.mimeType() || 'unknown';
+							} catch (e) {
+								// mimeType() sometimes fails in Mail.app
 							}
-							break;
+							result.push({
+								name: att.name(),
+								fileSize: att.fileSize(),
+								mimeType: mimeType
+							});
 						}
+						break;
 					}
-					break;
 				}
 			}
 			break;
@@ -1022,7 +1089,7 @@ try {
 }
 
 JSON.stringify(result);
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
+`, jxaFindMailboxHelper(), escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -1039,6 +1106,7 @@ JSON.stringify(result);
 
 // SaveAttachment saves an attachment to disk
 func (c *Client) SaveAttachment(accountName, mailboxName, messageID, attachmentName, savePath string) error {
+	mboxResolve := jxaResolveMailbox("mbox", "acc", mailboxName)
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 const app = Application.currentApplication();
@@ -1046,7 +1114,7 @@ app.includeStandardAdditions = true;
 
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	%s
 	const messages = mbox.messages();
 
 	let targetMsg = null;
@@ -1079,7 +1147,7 @@ try {
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID), escapeJSString(attachmentName), escapeJSString(savePath))
+`, escapeJSString(accountName), mboxResolve, escapeJSString(messageID), escapeJSString(attachmentName), escapeJSString(savePath))
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -1185,6 +1253,7 @@ const searchTerm = '%s'.toLowerCase();
 const targetAccount = '%s';
 const targetMailbox = '%s';
 const maxResults = %d;
+%s
 
 try {
 	const accounts = mail.accounts();
@@ -1196,50 +1265,41 @@ try {
 			continue;
 		}
 
-		const mailboxes = acc.mailboxes();
+		const mbox = findMailbox(acc, targetMailbox);
+		if (!mbox) continue;
 
-		for (let j = 0; j < mailboxes.length; j++) {
-			const mbox = mailboxes[j];
-			const mboxName = mbox.name();
+		const messages = mbox.messages();
+		// Limit how many messages to check per mailbox for performance
+		// Messages are typically sorted newest first, so this checks recent messages
+		const maxToCheck = Math.min(messages.length, 500);
 
-			// Only search specified mailbox
-			if (mboxName !== targetMailbox) {
-				continue;
+		for (let k = 0; k < maxToCheck; k++) {
+			if (result.length >= maxResults) {
+				break outerLoop;
 			}
 
-			const messages = mbox.messages();
-			// Limit how many messages to check per mailbox for performance
-			// Messages are typically sorted newest first, so this checks recent messages
-			const maxToCheck = Math.min(messages.length, 500);
+			const msg = messages[k];
+			try {
+				const subject = (msg.subject() || '').toLowerCase();
+				const sender = (msg.sender() || '').toLowerCase();
 
-			for (let k = 0; k < maxToCheck; k++) {
-				if (result.length >= maxResults) {
-					break outerLoop;
+				// Only search subject and sender
+				if (subject.includes(searchTerm) || sender.includes(searchTerm)) {
+					result.push({
+						id: String(msg.id()),
+						subject: msg.subject() || '',
+						sender: msg.sender() || '',
+						dateReceived: (msg.dateReceived() || new Date()).toString(),
+						dateSent: (msg.dateSent() || new Date()).toString(),
+						read: msg.readStatus(),
+						flagged: msg.flaggedStatus(),
+						messageSize: msg.messageSize(),
+						mailbox: targetMailbox,
+						account: acc.name()
+					});
 				}
-
-				const msg = messages[k];
-				try {
-					const subject = (msg.subject() || '').toLowerCase();
-					const sender = (msg.sender() || '').toLowerCase();
-
-					// Only search subject and sender
-					if (subject.includes(searchTerm) || sender.includes(searchTerm)) {
-						result.push({
-							id: String(msg.id()),
-							subject: msg.subject() || '',
-							sender: msg.sender() || '',
-							dateReceived: (msg.dateReceived() || new Date()).toString(),
-							dateSent: (msg.dateSent() || new Date()).toString(),
-							read: msg.readStatus(),
-							flagged: msg.flaggedStatus(),
-							messageSize: msg.messageSize(),
-							mailbox: mbox.name(),
-							account: acc.name()
-						});
-					}
-				} catch (e) {
-					// Skip messages that cause errors
-				}
+			} catch (e) {
+				// Skip messages that cause errors
 			}
 		}
 	}
@@ -1248,7 +1308,7 @@ try {
 }
 
 JSON.stringify(result);
-`, escapedQuery, escapedAccount, escapedMailbox, limit)
+`, escapedQuery, escapedAccount, escapedMailbox, limit, jxaFindMailboxHelper())
 
 	output, err := c.runJXA(script)
 	if err != nil {
