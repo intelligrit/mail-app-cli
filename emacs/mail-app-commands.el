@@ -305,10 +305,281 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
         (mail-app-list-mailboxes-for-account mail-app-current-account t)
       (mail-app-list-mailboxes t)))
    ((eq major-mode 'mail-app-messages-mode)
-    (when (and mail-app-current-account mail-app-current-mailbox)
-      (mail-app-list-messages mail-app-current-account mail-app-current-mailbox)))
+    ;; Check if this is a unified view
+    (cond
+     ((eq mail-app-unified-view 'inbox) (mail-app-list-inbox))
+     ((eq mail-app-unified-view 'unread) (mail-app-list-unread))
+     ((eq mail-app-unified-view 'sent) (mail-app-list-sent))
+     ((eq mail-app-unified-view 'drafts) (mail-app-list-drafts))
+     ((eq mail-app-unified-view 'flagged) (mail-app-list-flagged))
+     ((eq mail-app-unified-view 'trash) (mail-app-list-trash))
+     ((eq mail-app-unified-view 'junk) (mail-app-list-junk))
+     ;; Standard account/mailbox view
+     ((and mail-app-current-account mail-app-current-mailbox
+           (not (string-equal mail-app-current-account "All Accounts")))
+      (mail-app-list-messages mail-app-current-account mail-app-current-mailbox))
+     (t (message "Cannot refresh - no context"))))
    (t
     (message "Nothing to refresh"))))
+
+
+
+;;; Interactive commands - Unified Mailbox Views
+
+;;;###autoload
+(defun mail-app-list-inbox ()
+  "List unified inbox messages across all accounts.
+Uses the faster unified inbox API from Mail.app."
+  (interactive)
+  (let ((buf (get-buffer-create "*Mail.app Inbox*")))
+    (with-current-buffer buf
+      (mail-app-messages-mode)
+      (setq mail-app-current-account "All Accounts")
+      (setq mail-app-current-mailbox "Inbox")
+      (setq mail-app-current-offset 0)
+      (setq mail-app-unified-view 'inbox)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading unified inbox...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading unified inbox" 'select-object)
+    (let* ((limit (mail-app--compute-message-limit))
+           (args (list "messages" "inbox"
+                       "-l" (number-to-string limit)
+                       "-o" "0"))
+           (args (if mail-app-read-message-content
+                     (append args '("--with-content"))
+                   args))
+           (args (if mail-app-show-only-unread
+                     (append args '("-u"))
+                   args)))
+      (apply 'mail-app--run-command-async
+             (lambda (output)
+               (let ((messages (mail-app--parse-messages-output output)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (setq mail-app-current-limit limit)
+                     (setq mail-app-messages-data messages)
+                     (mail-app--format-messages messages)
+                     (mail-app--speak (format "Loaded %d messages" (length messages)) 'task-done)
+                     (mail-app--emacspeak-speak-line)))))
+             args))))
+
+;;;###autoload
+(defun mail-app-list-unread ()
+  "List all unread messages across all accounts.
+Uses the faster unified inbox with unread filter from Mail.app."
+  (interactive)
+  (let ((buf (get-buffer-create "*Mail.app Unread*")))
+    (with-current-buffer buf
+      (mail-app-messages-mode)
+      (setq mail-app-current-account "All Accounts")
+      (setq mail-app-current-mailbox "Unread")
+      (setq mail-app-current-offset 0)
+      (setq mail-app-unified-view 'unread)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading unread messages...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading unread messages" 'select-object)
+    (let* ((limit (mail-app--compute-message-limit))
+           (args (list "messages" "unread"
+                       "-l" (number-to-string limit)
+                       "-o" "0"))
+           (args (if mail-app-read-message-content
+                     (append args '("--with-content"))
+                   args)))
+      (apply 'mail-app--run-command-async
+             (lambda (output)
+               (let ((messages (mail-app--parse-messages-output output)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (setq mail-app-current-limit limit)
+                     (setq mail-app-messages-data messages)
+                     (mail-app--format-messages messages)
+                     (mail-app--speak (format "Loaded %d unread messages" (length messages)) 'task-done)
+                     (mail-app--emacspeak-speak-line)))))
+             args))))
+
+;;;###autoload
+(defun mail-app-list-sent ()
+  "List sent messages across all accounts.
+Uses the faster unified sent mailbox from Mail.app."
+  (interactive)
+  (let ((buf (get-buffer-create "*Mail.app Sent*")))
+    (with-current-buffer buf
+      (mail-app-messages-mode)
+      (setq mail-app-current-account "All Accounts")
+      (setq mail-app-current-mailbox "Sent")
+      (setq mail-app-current-offset 0)
+      (setq mail-app-unified-view 'sent)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading sent messages...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading sent messages" 'select-object)
+    (let* ((limit (mail-app--compute-message-limit))
+           (args (list "messages" "sent"
+                       "-l" (number-to-string limit)
+                       "-o" "0"))
+           (args (if mail-app-read-message-content
+                     (append args '("--with-content"))
+                   args)))
+      (apply 'mail-app--run-command-async
+             (lambda (output)
+               (let ((messages (mail-app--parse-messages-output output)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (setq mail-app-current-limit limit)
+                     (setq mail-app-messages-data messages)
+                     (mail-app--format-messages messages)
+                     (mail-app--speak (format "Loaded %d sent messages" (length messages)) 'task-done)
+                     (mail-app--emacspeak-speak-line)))))
+             args))))
+
+;;;###autoload
+(defun mail-app-list-drafts ()
+  "List draft messages across all accounts.
+Uses the faster unified drafts mailbox from Mail.app."
+  (interactive)
+  (let ((buf (get-buffer-create "*Mail.app Drafts*")))
+    (with-current-buffer buf
+      (mail-app-messages-mode)
+      (setq mail-app-current-account "All Accounts")
+      (setq mail-app-current-mailbox "Drafts")
+      (setq mail-app-current-offset 0)
+      (setq mail-app-unified-view 'drafts)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading draft messages...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading drafts" 'select-object)
+    (let* ((limit (mail-app--compute-message-limit))
+           (args (list "messages" "drafts"
+                       "-l" (number-to-string limit)
+                       "-o" "0"))
+           (args (if mail-app-read-message-content
+                     (append args '("--with-content"))
+                   args)))
+      (apply 'mail-app--run-command-async
+             (lambda (output)
+               (let ((messages (mail-app--parse-messages-output output)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (setq mail-app-current-limit limit)
+                     (setq mail-app-messages-data messages)
+                     (mail-app--format-messages messages)
+                     (mail-app--speak (format "Loaded %d drafts" (length messages)) 'task-done)
+                     (mail-app--emacspeak-speak-line)))))
+             args))))
+
+;;;###autoload
+(defun mail-app-list-flagged ()
+  "List flagged messages across all accounts.
+Uses the faster unified inbox with flagged filter from Mail.app."
+  (interactive)
+  (let ((buf (get-buffer-create "*Mail.app Flagged*")))
+    (with-current-buffer buf
+      (mail-app-messages-mode)
+      (setq mail-app-current-account "All Accounts")
+      (setq mail-app-current-mailbox "Flagged")
+      (setq mail-app-current-offset 0)
+      (setq mail-app-unified-view 'flagged)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading flagged messages...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading flagged messages" 'select-object)
+    (let* ((limit (mail-app--compute-message-limit))
+           (args (list "messages" "flagged"
+                       "-l" (number-to-string limit)
+                       "-o" "0"))
+           (args (if mail-app-read-message-content
+                     (append args '("--with-content"))
+                   args)))
+      (apply 'mail-app--run-command-async
+             (lambda (output)
+               (let ((messages (mail-app--parse-messages-output output)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (setq mail-app-current-limit limit)
+                     (setq mail-app-messages-data messages)
+                     (mail-app--format-messages messages)
+                     (mail-app--speak (format "Loaded %d flagged messages" (length messages)) 'task-done)
+                     (mail-app--emacspeak-speak-line)))))
+             args))))
+
+;;;###autoload
+(defun mail-app-list-trash ()
+  "List trash messages across all accounts.
+Uses the faster unified trash mailbox from Mail.app."
+  (interactive)
+  (let ((buf (get-buffer-create "*Mail.app Trash*")))
+    (with-current-buffer buf
+      (mail-app-messages-mode)
+      (setq mail-app-current-account "All Accounts")
+      (setq mail-app-current-mailbox "Trash")
+      (setq mail-app-current-offset 0)
+      (setq mail-app-unified-view 'trash)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading trash messages...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading trash" 'select-object)
+    (let* ((limit (mail-app--compute-message-limit))
+           (args (list "messages" "trash"
+                       "-l" (number-to-string limit)
+                       "-o" "0"))
+           (args (if mail-app-read-message-content
+                     (append args '("--with-content"))
+                   args)))
+      (apply 'mail-app--run-command-async
+             (lambda (output)
+               (let ((messages (mail-app--parse-messages-output output)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (setq mail-app-current-limit limit)
+                     (setq mail-app-messages-data messages)
+                     (mail-app--format-messages messages)
+                     (mail-app--speak (format "Loaded %d trash messages" (length messages)) 'task-done)
+                     (mail-app--emacspeak-speak-line)))))
+             args))))
+
+;;;###autoload
+(defun mail-app-list-junk ()
+  "List junk/spam messages across all accounts.
+Uses the faster unified junk mailbox from Mail.app."
+  (interactive)
+  (let ((buf (get-buffer-create "*Mail.app Junk*")))
+    (with-current-buffer buf
+      (mail-app-messages-mode)
+      (setq mail-app-current-account "All Accounts")
+      (setq mail-app-current-mailbox "Junk")
+      (setq mail-app-current-offset 0)
+      (setq mail-app-unified-view 'junk)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert "Loading junk messages...\n")))
+    (switch-to-buffer buf)
+    (mail-app--speak "Loading junk" 'select-object)
+    (let* ((limit (mail-app--compute-message-limit))
+           (args (list "messages" "junk"
+                       "-l" (number-to-string limit)
+                       "-o" "0"))
+           (args (if mail-app-read-message-content
+                     (append args '("--with-content"))
+                   args)))
+      (apply 'mail-app--run-command-async
+             (lambda (output)
+               (let ((messages (mail-app--parse-messages-output output)))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (setq mail-app-current-limit limit)
+                     (setq mail-app-messages-data messages)
+                     (mail-app--format-messages messages)
+                     (mail-app--speak (format "Loaded %d junk messages" (length messages)) 'task-done)
+                     (mail-app--emacspeak-speak-line)))))
+             args))))
 
 
 
@@ -320,8 +591,9 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
    (list (read-string "Account: " mail-app-default-account)
          (read-string "Mailbox: " "INBOX")))
   (mail-app--speak (format "Loading messages from %s" mailbox) 'select-object)
-  (let* ((args (list "messages" "list" "-a" account "-m" mailbox
-                     "-l" (number-to-string mail-app-message-limit)
+  (let* ((limit (mail-app--compute-message-limit))
+         (args (list "messages" "list" "-a" account "-m" mailbox
+                     "-l" (number-to-string limit)
                      "-o" "0"))
          (args (if mail-app-read-message-content
                    (append args '("--with-content"))
@@ -336,6 +608,7 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
       (setq mail-app-current-account account)
       (setq mail-app-current-mailbox mailbox)
       (setq mail-app-current-offset 0)
+      (setq mail-app-current-limit limit)
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert "Loading messages...\n")))
@@ -348,7 +621,9 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                  (with-current-buffer buf
                    (setq mail-app-messages-data messages)
                    (mail-app--format-messages messages)
-                   (mail-app--speak (format "Loaded %d messages" (length messages)) 'task-done)))))
+                   (mail-app--speak (format "Loaded %d messages" (length messages)) 'task-done)
+                   ;; Speak the first message so user knows where they are
+                   (mail-app--emacspeak-speak-line)))))
            args)))
 
 
@@ -356,19 +631,37 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
 (defun mail-app-load-more-messages ()
   "Load next page of messages and append to current list."
   (interactive)
-  (unless (and mail-app-current-account mail-app-current-mailbox)
-    (error "No mailbox context"))
-  (let ((new-offset (+ mail-app-current-offset mail-app-message-limit)))
-    (mail-app--speak (format "Loading more messages, offset %d" new-offset) 'select-object)
-    (let* ((args (list "messages" "list"
-                       "-a" mail-app-current-account
-                       "-m" mail-app-current-mailbox
-                       "-l" (number-to-string mail-app-message-limit)
-                       "-o" (number-to-string new-offset)))
+  (let* ((page-size (or mail-app-current-limit mail-app-message-limit))
+         (new-offset (+ mail-app-current-offset page-size)))
+    (mail-app--speak (format "Loading more messages" ) 'select-object)
+    ;; Build args based on whether this is a unified view or standard view
+    (let* ((cmd (cond
+                 ((eq mail-app-unified-view 'inbox) "inbox")
+                 ((eq mail-app-unified-view 'unread) "unread")
+                 ((eq mail-app-unified-view 'sent) "sent")
+                 ((eq mail-app-unified-view 'drafts) "drafts")
+                 ((eq mail-app-unified-view 'flagged) "flagged")
+                 ((eq mail-app-unified-view 'trash) "trash")
+                 ((eq mail-app-unified-view 'junk) "junk")
+                 (t nil)))
+           (args (if cmd
+                     ;; Unified view
+                     (list "messages" cmd
+                           "-l" (number-to-string page-size)
+                           "-o" (number-to-string new-offset))
+                   ;; Standard account/mailbox view
+                   (progn
+                     (unless (and mail-app-current-account mail-app-current-mailbox)
+                       (error "No mailbox context"))
+                     (list "messages" "list"
+                           "-a" mail-app-current-account
+                           "-m" mail-app-current-mailbox
+                           "-l" (number-to-string page-size)
+                           "-o" (number-to-string new-offset)))))
            (args (if mail-app-read-message-content
                      (append args '("--with-content"))
                    args))
-           (args (if mail-app-show-only-unread
+           (args (if (and mail-app-show-only-unread (not cmd))
                      (append args '("-u"))
                    args))
            (buf (current-buffer)))
@@ -382,10 +675,11 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                        (setq mail-app-current-offset new-offset)
                        (setq mail-app-messages-data (append mail-app-messages-data new-messages))
                        (mail-app--format-messages mail-app-messages-data)
-                       (mail-app--speak (format "Loaded %d more messages, total %d"
+                       (mail-app--speak (format "Loaded %d more, %d total"
                                                 (length new-messages)
                                                 (length mail-app-messages-data))
-                                        'task-done))))))
+                                        'task-done)
+                       (mail-app--emacspeak-speak-line))))))
              args))))
 
 
@@ -395,7 +689,9 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
   (interactive)
   (let ((message (mail-app--get-message-at-point)))
     (if (not message)
-        (message "No message at point")
+        (progn
+          (mail-app--speak "No message at point" 'warn-user)
+          (message "No message at point"))
       (let* ((id (plist-get message :id))
              ;; For search results, use account/mailbox from message data
              (account (or (plist-get message :account) mail-app-current-account))
@@ -446,8 +742,8 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                (when-let* ((date (plist-get details :date-received)))
                  (insert (propertize "Date: " 'face 'bold) date "\n"))
                (insert "\n")
-               (when-let* ((content (plist-get details :content)))
-                 (insert content)))
+               (setq mail-app-body-start (point-marker))
+               (mail-app--insert-content (plist-get details :content)))
               ((eq view-mode 'full)
                (when-let* ((subject (plist-get details :subject)))
                  (insert (propertize "Subject: " 'face 'bold) subject "\n"))
@@ -466,13 +762,20 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                (when-let* ((size (plist-get details :size)))
                  (insert (propertize "Size: " 'face 'bold) (format "%d bytes" size) "\n"))
                (insert "\n")
-               (when-let* ((content (plist-get details :content)))
-                 (insert content)))
+               (setq mail-app-body-start (point-marker))
+               (mail-app--insert-content (plist-get details :content)))
               ((eq view-mode 'attachments)
                (insert "Loading attachments...\n")))
-             (goto-char (point-min))
-             (forward-line 4)
-             (mail-app--speak "Message loaded" 'task-done)
+             (if mail-app-body-start
+                 (goto-char mail-app-body-start)
+               (goto-char (point-min))
+               (forward-line 4))
+             (let* ((subj (plist-get details :subject))
+                    (from (plist-get details :from))
+                    (announce (concat
+                               (if subj (format "Subject: %s. " subj) "")
+                               (if from (format "From: %s" from) ""))))
+               (mail-app--speak (if (string-empty-p announce) "Message loaded" announce) 'task-done))
              ;; Automatically mark as read if enabled and message is unread
              (when (and mail-app-mark-as-read-on-view
                        (not (plist-get details :read)))
@@ -569,8 +872,8 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                  (when-let* ((date (plist-get details :date-received)))
                    (insert (propertize "Date: " 'face 'bold) date "\n"))
                  (insert "\n")
-                 (when-let* ((content (plist-get details :content)))
-                   (insert content)))
+                 (setq mail-app-body-start (point-marker))
+                 (mail-app--insert-content (plist-get details :content)))
                 ((eq next 'full)
                  (when-let* ((subject (plist-get details :subject)))
                    (insert (propertize "Subject: " 'face 'bold) subject "\n"))
@@ -589,10 +892,12 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
                  (when-let* ((size (plist-get details :size)))
                    (insert (propertize "Size: " 'face 'bold) (format "%d bytes" size) "\n"))
                  (insert "\n")
-                 (when-let* ((content (plist-get details :content)))
-                   (insert content))))
-               (goto-char (point-min))
-               (forward-line 7)
+                 (setq mail-app-body-start (point-marker))
+                 (mail-app--insert-content (plist-get details :content))))
+               (if mail-app-body-start
+                   (goto-char mail-app-body-start)
+                 (goto-char (point-min))
+                 (forward-line 7))
                (mail-app--speak (format "%s view loaded" (symbol-name next)) 'task-done)))))
        "messages" "show" mail-app-current-message-id
        "-a" mail-app-current-account "-m" mail-app-current-mailbox))))
@@ -613,6 +918,18 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
     (setq mail-app-current-view-mode next)
     ;; Reuse the cycle-view logic
     (mail-app-cycle-view)))
+
+
+
+(defun mail-app-jump-to-body ()
+  "Move point to the start of the message body, skipping headers."
+  (interactive)
+  (if mail-app-body-start
+      (progn
+        (goto-char mail-app-body-start)
+        (mail-app--speak "Body" 'select-object))
+    (goto-char (point-min))
+    (forward-line 4)))
 
 
 
@@ -686,6 +1003,9 @@ each message. When disabled, only subject and sender are read."
       (let* ((id (plist-get message :id))
              (flagged (plist-get message :flagged))
              (new-state (not flagged))
+             ;; Get account/mailbox from message data (for unified views)
+             (account (or (plist-get message :account) mail-app-current-account))
+             (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
              (buf (current-buffer)))
         (mail-app--speak (if new-state "Flagging message" "Unflagging message") 'select-object)
         (mail-app--run-command-async
@@ -695,9 +1015,10 @@ each message. When disabled, only subject and sender are read."
                (mail-app--speak (if new-state "Flagged" "Unflagged") 'task-done)
                (mail-app-refresh))))
          "messages" "flag" id
-         "-a" mail-app-current-account
-         "-m" mail-app-current-mailbox
-         "--flagged" (if new-state "true" "false"))))))
+         "-a" account
+         "-m" mailbox
+         (format "--flagged=%s" (if new-state "true" "false")))))))
+
 
 
 
@@ -709,8 +1030,11 @@ each message. When disabled, only subject and sender are read."
         (message "No message at point")
       (when (yes-or-no-p "Delete this message? ")
         (mail-app--speak "Deleting message" 'delete-object)
-        (let ((id (plist-get message :id))
-              (buf (current-buffer)))
+        (let* ((id (plist-get message :id))
+               ;; Get account/mailbox from message data (for unified views)
+               (account (or (plist-get message :account) mail-app-current-account))
+               (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
+               (buf (current-buffer)))
           (mail-app--run-command-async
            (lambda (output)
              (when (buffer-live-p buf)
@@ -718,8 +1042,8 @@ each message. When disabled, only subject and sender are read."
                  (mail-app--speak "Deleted" 'task-done)
                  (mail-app-refresh))))
            "messages" "delete" id
-           "-a" mail-app-current-account
-           "-m" mail-app-current-mailbox))))))
+           "-a" account
+           "-m" mailbox))))))
 
 
 
@@ -730,8 +1054,11 @@ each message. When disabled, only subject and sender are read."
     (if (not message)
         (message "No message at point")
       (mail-app--speak "Archiving message" 'select-object)
-      (let ((id (plist-get message :id))
-            (buf (current-buffer)))
+      (let* ((id (plist-get message :id))
+             ;; Get account/mailbox from message data (for unified views)
+             (account (or (plist-get message :account) mail-app-current-account))
+             (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
+             (buf (current-buffer)))
         (mail-app--run-command-async
          (lambda (output)
            (when (buffer-live-p buf)
@@ -739,8 +1066,8 @@ each message. When disabled, only subject and sender are read."
                (mail-app--speak "Archived" 'task-done)
                (mail-app-refresh))))
          "messages" "archive" id
-         "-a" mail-app-current-account
-         "-m" mail-app-current-mailbox)))))
+         "-a" account
+         "-m" mailbox)))))
 
 
 
@@ -751,8 +1078,11 @@ each message. When disabled, only subject and sender are read."
     (if (not message)
         (message "No message at point")
       (mail-app--speak "Marking as junk" 'select-object)
-      (let ((id (plist-get message :id))
-            (buf (current-buffer)))
+      (let* ((id (plist-get message :id))
+             ;; Get account/mailbox from message data (for unified views)
+             (account (or (plist-get message :account) mail-app-current-account))
+             (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
+             (buf (current-buffer)))
         (mail-app--run-command-async
          (lambda (output)
            (when (buffer-live-p buf)
@@ -760,8 +1090,8 @@ each message. When disabled, only subject and sender are read."
                (mail-app--speak "Marked as junk" 'task-done)
                (mail-app-refresh))))
          "messages" "move" id "Junk"
-         "-a" mail-app-current-account
-         "-m" mail-app-current-mailbox)))))
+         "-a" account
+         "-m" mailbox)))))
 
 
 
@@ -769,8 +1099,11 @@ each message. When disabled, only subject and sender are read."
   "Move message at point to TARGET-MAILBOX."
   (interactive
    (list (completing-read "Move to mailbox: "
-                         (let* ((output (mail-app--run-command "mailboxes" "list"
-                                                              "-a" mail-app-current-account))
+                         (let* ((msg (mail-app--get-message-at-point))
+                                (account (or (and msg (plist-get msg :account))
+                                            mail-app-current-account))
+                                (output (mail-app--run-command "mailboxes" "list"
+                                                              "-a" account))
                                 (mailboxes (mail-app--parse-mailboxes-output output)))
                            (mapcar (lambda (mbox) (plist-get mbox :name)) mailboxes))
                          nil t)))
@@ -778,8 +1111,11 @@ each message. When disabled, only subject and sender are read."
     (if (not message)
         (message "No message at point")
       (mail-app--speak (format "Moving to %s" target-mailbox) 'select-object)
-      (let ((id (plist-get message :id))
-            (buf (current-buffer)))
+      (let* ((id (plist-get message :id))
+             ;; Get account/mailbox from message data (for unified views)
+             (account (or (plist-get message :account) mail-app-current-account))
+             (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
+             (buf (current-buffer)))
         (mail-app--run-command-async
          (lambda (output)
            (when (buffer-live-p buf)
@@ -787,8 +1123,8 @@ each message. When disabled, only subject and sender are read."
                (mail-app--speak (format "Moved to %s" target-mailbox) 'task-done)
                (mail-app-refresh))))
          "messages" "move" id target-mailbox
-         "-a" mail-app-current-account
-         "-m" mail-app-current-mailbox)))))
+         "-a" account
+         "-m" mailbox)))))
 
 
 
@@ -817,6 +1153,9 @@ each message. When disabled, only subject and sender are read."
       (let* ((id (plist-get message :id))
              (read (plist-get message :read))
              (new-state (not read))
+             ;; Get account/mailbox from message data (for unified views)
+             (account (or (plist-get message :account) mail-app-current-account))
+             (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
              (buf (current-buffer)))
         (mail-app--speak (format "Marking as %s" (if new-state "read" "unread")) 'select-object)
         (mail-app--run-command-async
@@ -826,8 +1165,8 @@ each message. When disabled, only subject and sender are read."
                (mail-app--speak (format "Marked as %s" (if new-state "read" "unread")) 'task-done)
                (mail-app-refresh))))
          "messages" "mark" id
-         "-a" mail-app-current-account
-         "-m" mail-app-current-mailbox
+         "-a" account
+         "-m" mailbox
          (format "--read=%s" (if new-state "true" "false")))))))
 
 
@@ -836,11 +1175,15 @@ each message. When disabled, only subject and sender are read."
   "Toggle flag on current message in message view."
   (interactive)
   (when mail-app-current-message-id
-    (mail-app--run-command "messages" "flag" mail-app-current-message-id
-                           "-a" mail-app-current-account
-                           "-m" mail-app-current-mailbox
-                           "--flagged" "true")
-    (message "Message flagged")))
+    (mail-app--speak "Flagging message" 'select-object)
+    (mail-app--run-command-async
+     (lambda (output)
+       (message "Message flagged")
+       (mail-app--speak "Flagged" 'task-done))
+     "messages" "flag" mail-app-current-message-id
+     "-a" mail-app-current-account
+     "-m" mail-app-current-mailbox
+     "--flagged=true")))
 
 
 
@@ -849,11 +1192,18 @@ each message. When disabled, only subject and sender are read."
   (interactive)
   (when (and mail-app-current-message-id
              (yes-or-no-p "Delete this message? "))
-    (mail-app--run-command "messages" "delete" mail-app-current-message-id
-                           "-a" mail-app-current-account
-                           "-m" mail-app-current-mailbox)
-    (message "Message deleted")
-    (quit-window)))
+    (mail-app--speak "Deleting message" 'delete-object)
+    (let ((win (selected-window)))
+      (mail-app--run-command-async
+       (lambda (output)
+         (message "Message deleted")
+         (mail-app--speak "Deleted" 'task-done)
+         (when (window-live-p win)
+           (with-selected-window win
+             (quit-window))))
+       "messages" "delete" mail-app-current-message-id
+       "-a" mail-app-current-account
+       "-m" mail-app-current-mailbox))))
 
 
 
@@ -861,11 +1211,18 @@ each message. When disabled, only subject and sender are read."
   "Archive current message in message view."
   (interactive)
   (when mail-app-current-message-id
-    (mail-app--run-command "messages" "archive" mail-app-current-message-id
-                           "-a" mail-app-current-account
-                           "-m" mail-app-current-mailbox)
-    (message "Message archived")
-    (quit-window)))
+    (mail-app--speak "Archiving message" 'select-object)
+    (let ((win (selected-window)))
+      (mail-app--run-command-async
+       (lambda (output)
+         (message "Message archived")
+         (mail-app--speak "Archived" 'task-done)
+         (when (window-live-p win)
+           (with-selected-window win
+             (quit-window))))
+       "messages" "archive" mail-app-current-message-id
+       "-a" mail-app-current-account
+       "-m" mail-app-current-mailbox))))
 
 
 
@@ -873,11 +1230,15 @@ each message. When disabled, only subject and sender are read."
   "Toggle read status of current message in message view."
   (interactive)
   (when mail-app-current-message-id
-    (mail-app--run-command "messages" "mark" mail-app-current-message-id
-                           "-a" mail-app-current-account
-                           "-m" mail-app-current-mailbox
-                           "--read=false")
-    (message "Message marked as unread")))
+    (mail-app--speak "Marking as unread" 'select-object)
+    (mail-app--run-command-async
+     (lambda (output)
+       (message "Message marked as unread")
+       (mail-app--speak "Marked as unread" 'task-done))
+     "messages" "mark" mail-app-current-message-id
+     "-a" mail-app-current-account
+     "-m" mail-app-current-mailbox
+     "--read=false")))
 
 
 
@@ -1234,33 +1595,30 @@ each message. When disabled, only subject and sender are read."
       (message "No messages marked")
     (when (yes-or-no-p (format "Delete %d marked messages? " (length mail-app-marked-messages)))
       (mail-app--speak (format "Deleting %d messages" (length mail-app-marked-messages)) 'select-object)
-      (let ((count 0)
-            (errors 0)
-            (total (length mail-app-marked-messages)))
-        (dolist (id mail-app-marked-messages)
-          (condition-case err
-              (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
-                                   mail-app-messages-data))
-                     (account (or (plist-get msg :account) mail-app-current-account))
-                     (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-                (when (and account mailbox)
-                  (mail-app--run-command "messages" "delete" id
-                                         "-a" account
-                                         "-m" mailbox)
-                  (setq count (1+ count))
-                  (when (zerop (mod count 5))
-                    (message "Deleted %d/%d..." count total))))
-            (error
-             (setq errors (1+ errors))
-             ;; Don't spam with individual errors, just count them
-             nil)))
+      (let* ((buf (current-buffer))
+             (operations
+              (mapcar (lambda (id)
+                        (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                              mail-app-messages-data))
+                               (account (or (plist-get msg :account) mail-app-current-account))
+                               (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
+                          (list "messages" "delete" id "-a" account "-m" mailbox)))
+                      mail-app-marked-messages)))
         (setq mail-app-marked-messages nil)
-        (let ((msg (format "Deleted %d of %d messages%s"
-                          count total
-                          (if (> errors 0) (format " (%d failed)" errors) ""))))
-          (message msg)
-          (mail-app--speak msg 'task-done))
-        (mail-app-refresh)))))
+        (mail-app--run-bulk-async
+         operations
+         (lambda (success-count error-count total)
+           (let ((msg (format "Deleted %d of %d messages%s"
+                              success-count total
+                              (if (> error-count 0) (format " (%d failed)" error-count) ""))))
+             (message msg)
+             (mail-app--speak msg 'task-done))
+           (when (buffer-live-p buf)
+             (with-current-buffer buf
+               (mail-app-refresh))))
+         (lambda (completed total)
+           (when (zerop (mod completed 5))
+             (message "Deleting %d/%d..." completed total))))))))
 
 
 
@@ -1270,32 +1628,30 @@ each message. When disabled, only subject and sender are read."
   (if (null mail-app-marked-messages)
       (message "No messages marked")
     (mail-app--speak (format "Archiving %d messages" (length mail-app-marked-messages)) 'select-object)
-    (let ((count 0)
-          (errors 0)
-          (total (length mail-app-marked-messages)))
-      (dolist (id mail-app-marked-messages)
-        (condition-case err
-            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
-                                 mail-app-messages-data))
-                   (account (or (plist-get msg :account) mail-app-current-account))
-                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-              (when (and account mailbox)
-                (mail-app--run-command "messages" "archive" id
-                                       "-a" account
-                                       "-m" mailbox)
-                (setq count (1+ count))
-                (when (zerop (mod count 5))
-                  (message "Archived %d/%d..." count total))))
-          (error
-           (setq errors (1+ errors))
-           nil)))
+    (let* ((buf (current-buffer))
+           (operations
+            (mapcar (lambda (id)
+                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                            mail-app-messages-data))
+                             (account (or (plist-get msg :account) mail-app-current-account))
+                             (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
+                        (list "messages" "archive" id "-a" account "-m" mailbox)))
+                    mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
-      (let ((msg (format "Archived %d of %d messages%s"
-                        count total
-                        (if (> errors 0) (format " (%d failed)" errors) ""))))
-        (message msg)
-        (mail-app--speak msg 'task-done))
-      (mail-app-refresh))))
+      (mail-app--run-bulk-async
+       operations
+       (lambda (success-count error-count total)
+         (let ((msg (format "Archived %d of %d messages%s"
+                            success-count total
+                            (if (> error-count 0) (format " (%d failed)" error-count) ""))))
+           (message msg)
+           (mail-app--speak msg 'task-done))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (mail-app-refresh))))
+       (lambda (completed total)
+         (when (zerop (mod completed 5))
+           (message "Archiving %d/%d..." completed total)))))))
 
 
 
@@ -1305,33 +1661,30 @@ each message. When disabled, only subject and sender are read."
   (if (null mail-app-marked-messages)
       (message "No messages marked")
     (mail-app--speak (format "Flagging %d messages" (length mail-app-marked-messages)) 'select-object)
-    (let ((count 0)
-          (errors 0)
-          (total (length mail-app-marked-messages)))
-      (dolist (id mail-app-marked-messages)
-        (condition-case err
-            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
-                                 mail-app-messages-data))
-                   (account (or (plist-get msg :account) mail-app-current-account))
-                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-              (when (and account mailbox)
-                (mail-app--run-command "messages" "flag" id
-                                       "-a" account
-                                       "-m" mailbox
-                                       "--flagged" "true")
-                (setq count (1+ count))
-                (when (zerop (mod count 5))
-                  (message "Flagged %d/%d..." count total))))
-          (error
-           (setq errors (1+ errors))
-           nil)))
+    (let* ((buf (current-buffer))
+           (operations
+            (mapcar (lambda (id)
+                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                            mail-app-messages-data))
+                             (account (or (plist-get msg :account) mail-app-current-account))
+                             (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
+                        (list "messages" "flag" id "-a" account "-m" mailbox "--flagged=true")))
+                    mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
-      (let ((msg (format "Flagged %d of %d messages%s"
-                        count total
-                        (if (> errors 0) (format " (%d failed)" errors) ""))))
-        (message msg)
-        (mail-app--speak msg 'task-done))
-      (mail-app-refresh))))
+      (mail-app--run-bulk-async
+       operations
+       (lambda (success-count error-count total)
+         (let ((msg (format "Flagged %d of %d messages%s"
+                            success-count total
+                            (if (> error-count 0) (format " (%d failed)" error-count) ""))))
+           (message msg)
+           (mail-app--speak msg 'task-done))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (mail-app-refresh))))
+       (lambda (completed total)
+         (when (zerop (mod completed 5))
+           (message "Flagging %d/%d..." completed total)))))))
 
 
 
@@ -1341,33 +1694,30 @@ each message. When disabled, only subject and sender are read."
   (if (null mail-app-marked-messages)
       (message "No messages marked")
     (mail-app--speak (format "Marking %d messages as read" (length mail-app-marked-messages)) 'select-object)
-    (let ((count 0)
-          (errors 0)
-          (total (length mail-app-marked-messages)))
-      (dolist (id mail-app-marked-messages)
-        (condition-case err
-            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
-                                 mail-app-messages-data))
-                   (account (or (plist-get msg :account) mail-app-current-account))
-                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-              (when (and account mailbox)
-                (mail-app--run-command "messages" "mark" id
-                                       "-a" account
-                                       "-m" mailbox
-                                       "--read=true")
-                (setq count (1+ count))
-                (when (zerop (mod count 5))
-                  (message "Marked %d/%d as read..." count total))))
-          (error
-           (setq errors (1+ errors))
-           nil)))
+    (let* ((buf (current-buffer))
+           (operations
+            (mapcar (lambda (id)
+                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                            mail-app-messages-data))
+                             (account (or (plist-get msg :account) mail-app-current-account))
+                             (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
+                        (list "messages" "mark" id "-a" account "-m" mailbox "--read=true")))
+                    mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
-      (let ((msg (format "Marked %d of %d messages as read%s"
-                        count total
-                        (if (> errors 0) (format " (%d failed)" errors) ""))))
-        (message msg)
-        (mail-app--speak msg 'task-done))
-      (mail-app-refresh))))
+      (mail-app--run-bulk-async
+       operations
+       (lambda (success-count error-count total)
+         (let ((msg (format "Marked %d of %d messages as read%s"
+                            success-count total
+                            (if (> error-count 0) (format " (%d failed)" error-count) ""))))
+           (message msg)
+           (mail-app--speak msg 'task-done))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (mail-app-refresh))))
+       (lambda (completed total)
+         (when (zerop (mod completed 5))
+           (message "Marking %d/%d as read..." completed total)))))))
 
 
 
@@ -1377,33 +1727,30 @@ each message. When disabled, only subject and sender are read."
   (if (null mail-app-marked-messages)
       (message "No messages marked")
     (mail-app--speak (format "Marking %d messages as unread" (length mail-app-marked-messages)) 'select-object)
-    (let ((count 0)
-          (errors 0)
-          (total (length mail-app-marked-messages)))
-      (dolist (id mail-app-marked-messages)
-        (condition-case err
-            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
-                                 mail-app-messages-data))
-                   (account (or (plist-get msg :account) mail-app-current-account))
-                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-              (when (and account mailbox)
-                (mail-app--run-command "messages" "mark" id
-                                       "-a" account
-                                       "-m" mailbox
-                                       "--read=false")
-                (setq count (1+ count))
-                (when (zerop (mod count 5))
-                  (message "Marked %d/%d as unread..." count total))))
-          (error
-           (setq errors (1+ errors))
-           nil)))
+    (let* ((buf (current-buffer))
+           (operations
+            (mapcar (lambda (id)
+                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                            mail-app-messages-data))
+                             (account (or (plist-get msg :account) mail-app-current-account))
+                             (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
+                        (list "messages" "mark" id "-a" account "-m" mailbox "--read=false")))
+                    mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
-      (let ((msg (format "Marked %d of %d messages as unread%s"
-                        count total
-                        (if (> errors 0) (format " (%d failed)" errors) ""))))
-        (message msg)
-        (mail-app--speak msg 'task-done))
-      (mail-app-refresh))))
+      (mail-app--run-bulk-async
+       operations
+       (lambda (success-count error-count total)
+         (let ((msg (format "Marked %d of %d messages as unread%s"
+                            success-count total
+                            (if (> error-count 0) (format " (%d failed)" error-count) ""))))
+           (message msg)
+           (mail-app--speak msg 'task-done))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (mail-app-refresh))))
+       (lambda (completed total)
+         (when (zerop (mod completed 5))
+           (message "Marking %d/%d as unread..." completed total)))))))
 
 
 
@@ -1413,32 +1760,30 @@ each message. When disabled, only subject and sender are read."
   (if (null mail-app-marked-messages)
       (message "No messages marked")
     (mail-app--speak (format "Marking %d messages as junk" (length mail-app-marked-messages)) 'select-object)
-    (let ((count 0)
-          (errors 0)
-          (total (length mail-app-marked-messages)))
-      (dolist (id mail-app-marked-messages)
-        (condition-case err
-            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
-                                 mail-app-messages-data))
-                   (account (or (plist-get msg :account) mail-app-current-account))
-                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-              (when (and account mailbox)
-                (mail-app--run-command "messages" "move" id "Junk"
-                                       "-a" account
-                                       "-m" mailbox)
-                (setq count (1+ count))
-                (when (zerop (mod count 5))
-                  (message "Marked %d/%d as junk..." count total))))
-          (error
-           (setq errors (1+ errors))
-           nil)))
+    (let* ((buf (current-buffer))
+           (operations
+            (mapcar (lambda (id)
+                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                            mail-app-messages-data))
+                             (account (or (plist-get msg :account) mail-app-current-account))
+                             (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
+                        (list "messages" "move" id "Junk" "-a" account "-m" mailbox)))
+                    mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
-      (let ((msg (format "Marked %d of %d messages as junk%s"
-                        count total
-                        (if (> errors 0) (format " (%d failed)" errors) ""))))
-        (message msg)
-        (mail-app--speak msg 'task-done))
-      (mail-app-refresh))))
+      (mail-app--run-bulk-async
+       operations
+       (lambda (success-count error-count total)
+         (let ((msg (format "Marked %d of %d messages as junk%s"
+                            success-count total
+                            (if (> error-count 0) (format " (%d failed)" error-count) ""))))
+           (message msg)
+           (mail-app--speak msg 'task-done))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (mail-app-refresh))))
+       (lambda (completed total)
+         (when (zerop (mod completed 5))
+           (message "Marking %d/%d as junk..." completed total)))))))
 
 
 
@@ -1454,32 +1799,30 @@ each message. When disabled, only subject and sender are read."
   (if (null mail-app-marked-messages)
       (message "No messages marked")
     (mail-app--speak (format "Moving %d messages to %s" (length mail-app-marked-messages) target-mailbox) 'select-object)
-    (let ((count 0)
-          (errors 0)
-          (total (length mail-app-marked-messages)))
-      (dolist (id mail-app-marked-messages)
-        (condition-case err
-            (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
-                                 mail-app-messages-data))
-                   (account (or (plist-get msg :account) mail-app-current-account))
-                   (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-              (when (and account mailbox)
-                (mail-app--run-command "messages" "move" id target-mailbox
-                                       "-a" account
-                                       "-m" mailbox)
-                (setq count (1+ count))
-                (when (zerop (mod count 5))
-                  (message "Moved %d/%d to %s..." count total target-mailbox))))
-          (error
-           (setq errors (1+ errors))
-           nil)))
+    (let* ((buf (current-buffer))
+           (operations
+            (mapcar (lambda (id)
+                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                                            mail-app-messages-data))
+                             (account (or (plist-get msg :account) mail-app-current-account))
+                             (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
+                        (list "messages" "move" id target-mailbox "-a" account "-m" mailbox)))
+                    mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
-      (let ((msg (format "Moved %d of %d messages to %s%s"
-                        count total target-mailbox
-                        (if (> errors 0) (format " (%d failed)" errors) ""))))
-        (message msg)
-        (mail-app--speak msg 'task-done))
-      (mail-app-refresh))))
+      (mail-app--run-bulk-async
+       operations
+       (lambda (success-count error-count total)
+         (let ((msg (format "Moved %d of %d messages to %s%s"
+                            success-count total target-mailbox
+                            (if (> error-count 0) (format " (%d failed)" error-count) ""))))
+           (message msg)
+           (mail-app--speak msg 'task-done))
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (mail-app-refresh))))
+       (lambda (completed total)
+         (when (zerop (mod completed 5))
+           (message "Moving %d/%d to %s..." completed total target-mailbox)))))))
 
 
 
@@ -1516,7 +1859,8 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
           (insert "Searching...\n")))
       (switch-to-buffer buf)
       ;; Search asynchronously
-      (let ((args (list "search" query "-l" (number-to-string mail-app-message-limit))))
+      (let* ((limit (mail-app--compute-message-limit))
+             (args (list "search" query "-l" (number-to-string limit))))
         (unless (string-empty-p account)
           (setq args (append args (list "-a" account))))
         (unless (string-empty-p mailbox)
@@ -1526,9 +1870,11 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
                  (let ((messages (mail-app--parse-search-output output)))
                    (when (buffer-live-p buf)
                      (with-current-buffer buf
+                       (setq mail-app-current-limit limit)
                        (setq mail-app-messages-data messages)
                        (mail-app--format-messages messages)
-                       (mail-app--speak (format "Found %d messages" (length messages)) 'task-done)))))
+                       (mail-app--speak (format "Found %d messages" (length messages)) 'task-done)
+                       (mail-app--emacspeak-speak-line)))))
                args)))))
 
 
@@ -1557,7 +1903,7 @@ If in a mailbox, searches that mailbox. Otherwise searches all INBOX mailboxes."
              (setq mail-app-messages-data messages)
              (mail-app--format-messages messages)
              (mail-app--speak (format "Found %d messages" (length messages)) 'task-done)))))
-     "search" query "-l" (number-to-string mail-app-message-limit))))
+     "search" query "-l" (number-to-string (mail-app--compute-message-limit)))))
 
 
 (provide 'mail-app-commands)
