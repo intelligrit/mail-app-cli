@@ -14,6 +14,77 @@
 
 ;;; Code:
 
+(defun mail-app--escape-for-speech (text)
+  "Escape TEXT for emacspeak by replacing colons with commas."
+  (when text
+    (replace-regexp-in-string ":" "," text)))
+
+
+;;; Message body rendering
+
+(defun mail-app--content-html-p (content)
+  "Return t if CONTENT appears to be HTML rather than plain text."
+  (and (stringp content)
+       (string-match-p "<[a-zA-Z!][^>]*>" content)))
+
+(defun mail-app--insert-html (html)
+  "Render HTML string into the current buffer using shr.
+shr is Emacs's built-in HTML renderer (used by EWW).  Emacspeak advises
+shr extensively, so links, headings, and emphasis are all spoken correctly."
+  (require 'shr)
+  (let* ((dom (with-temp-buffer
+                (insert html)
+                (libxml-parse-html-region (point-min) (point-max))))
+         ;; Leave a small right margin; avoid variable-width fonts
+         (shr-width (max 40 (- (window-width) 4)))
+         (shr-use-fonts nil)
+         (shr-inhibit-images t)
+         ;; Don't apply email's background/foreground colors — respect Emacs theme
+         (shr-use-colors nil)
+         ;; Skip aria-hidden content (decorative elements, tracking pixels)
+         (shr-discard-aria-hidden t)
+         ;; Don't fetch external images even if shr tries
+         (shr-image-animate nil))
+    (shr-insert-document dom)))
+
+(defun mail-app--insert-plain (text)
+  "Insert plain-text email body TEXT with readability cleanup.
+- Normalises CRLF to LF
+- Collapses runs of 3+ blank lines to 2
+- Strips trailing whitespace per line
+- Marks quoted lines (starting with >) with `shadow' face and,
+  when Emacspeak is present, a monotone personality so they are
+  spoken in a clearly different voice."
+  ;; Normalise line endings and whitespace
+  (setq text (replace-regexp-in-string "\r\n" "\n" text))
+  (setq text (replace-regexp-in-string "\n\n\n+" "\n\n" text))
+  (setq text (replace-regexp-in-string "[ \t]+\n" "\n" text))
+  (setq text (string-trim-right text))
+  (let ((start (point)))
+    (insert text "\n")
+    ;; Style quoted lines for both visual and audio differentiation
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward "^>.*" nil t)
+        (let ((qs (match-beginning 0))
+              (qe (match-end 0)))
+          (put-text-property qs qe 'face 'shadow)
+          (when (and (featurep 'emacspeak)
+                     (boundp 'voice-monotone-medium))
+            (put-text-property qs qe 'personality voice-monotone-medium)))))))
+
+(defun mail-app--insert-content (content)
+  "Insert email body CONTENT into the current buffer.
+Dispatches to shr HTML rendering when `mail-app-render-html' is non-nil
+and the content looks like HTML and libxml2 is available.
+Falls back to `mail-app--insert-plain' otherwise."
+  (when content
+    (if (and mail-app-render-html
+             (mail-app--content-html-p content)
+             (fboundp 'libxml-parse-html-region))
+        (mail-app--insert-html content)
+      (mail-app--insert-plain content))))
+
 
 ;;; Display functions
 
@@ -103,6 +174,10 @@
     (forward-line 4)))
 
 
+
+
+
+
 (defun mail-app--format-messages (messages)
   "Format MESSAGES for display."
   ;; Initialize sort settings from defaults on first run
@@ -111,9 +186,13 @@
     (setq mail-app-message-sort-reverse mail-app-default-messages-sort-reverse)
     (setq mail-app--sort-initialized t))
   (let* ((inhibit-read-only t)
-         ;; Check if these are search results - simpler: just check if current mailbox is a search
+         ;; Check if these are search results or unified views (need account/mailbox columns)
          (is-search (and mail-app-current-mailbox
                         (string-match-p "^Search:" mail-app-current-mailbox)))
+         ;; Unified views also need account/mailbox columns
+         (is-unified (and (boundp 'mail-app-unified-view) mail-app-unified-view))
+         (is-unread-view (eq mail-app-unified-view 'unread))
+         (show-account-cols (or is-search is-unified))
          ;; Sort messages
          (sorted-messages (mail-app--sort-messages messages
                                                    mail-app-message-sort-key
@@ -124,61 +203,66 @@
                                   ('subject "subject")
                                   ('from "from")
                                   ('unread "unread")
-                                  ('read "unread")) ; backwards compatibility
-                                (if mail-app-message-sort-reverse " ↓" " ↑"))))
+                                  ('read "unread"))
+                                (if mail-app-message-sort-reverse " ↓" " ↑")))
+         (loaded-count (length messages))
+         (page-limit (or mail-app-current-limit mail-app-message-limit))
+         (count-indicator (format "  (%d shown)" loaded-count)))
     (erase-buffer)
-    (insert (propertize (format "%s / %s / Messages%s\n"
+    (insert (propertize (format "%s / %s / Messages%s%s\n"
                                 (or mail-app-current-account "Search")
                                 (or mail-app-current-mailbox "All")
-                                sort-indicator)
+                                sort-indicator
+                                count-indicator)
                         'face 'bold))
     (insert "\n")
-    (if is-search
-        ;; Search results: show ACCOUNT and MAILBOX columns
+    (if show-account-cols
+        ;; Search results or unified views: show read status, subject, from, then account/mailbox
         (progn
-          (insert (format "%-2s %-20s %-15s %-40s %-30s\n"
-                          "" "ACCOUNT" "MAILBOX" "SUBJECT" "FROM"))
-          (insert (make-string 110 ?-) "\n")
+          (insert (format "%-2s %-3s %-45s %-30s %-15s %-15s\n"
+                          "" "   " "SUBJECT" "FROM" "ACCOUNT" "MAILBOX"))
+          (insert (make-string 115 ?-) "\n")
           (dolist (message sorted-messages)
             (let* ((id (plist-get message :id))
-                   (account (plist-get message :account))
-                   (mailbox (plist-get message :mailbox))
-                   (from (plist-get message :from))
-                   (subject (plist-get message :subject))
+                   (account (or (plist-get message :account) ""))
+                   (mailbox (or (plist-get message :mailbox) ""))
+                   (from (or (plist-get message :from) ""))
+                   (subject (or (plist-get message :subject) ""))
                    (content (plist-get message :content))
                    (read (plist-get message :read))
+                   (flagged (plist-get message :flagged))
                    (marked (member id mail-app-marked-messages))
                    (mark-str (if marked ">" " "))
-                   (line (format "%-2s %-20s %-15s %-40s %-30s\n"
+                   (flag-str (concat (if read " " "●") (if flagged "⚑" " ")))
+                   (line (format "%-2s %-3s %-45s %-30s %-15s %-15s\n"
                                  mark-str
-                                 (truncate-string-to-width account 20 nil nil "...")
-                                 (truncate-string-to-width mailbox 15 nil nil "...")
-                                 (truncate-string-to-width subject 40 nil nil "...")
-                                 (truncate-string-to-width from 30 nil nil "...")))
-                   (speech-text (if (and content (not (string-empty-p content)))
-                                   (format "%s%s%s from %s in %s %s. Message content: %s"
-                                          (if marked "Marked. " "")
-                                          (if (not read) "Unread. " "")
-                                          subject from account mailbox
-                                          (truncate-string-to-width content 300 nil nil "..."))
-                                 (format "%s%s%s from %s in %s %s"
-                                        (if marked "Marked. " "")
-                                        (if (not read) "Unread. " "")
-                                        subject from account mailbox)))
+                                 flag-str
+                                 (truncate-string-to-width subject 45 nil nil "...")
+                                 (truncate-string-to-width from 30 nil nil "...")
+                                 (truncate-string-to-width account 15 nil nil "...")
+                                 (truncate-string-to-width mailbox 15 nil nil "...")))
+                   (speech-text (mail-app--escape-for-speech
+                                 (concat
+                                  (if (and (not read) (not is-unread-view)) "Unread. " "")
+                                  (if marked "Marked. " "")
+                                  (if flagged "Flagged. " "")
+                                  subject ". From " from ". "
+                                  (when (and content (not (string-empty-p content)))
+                                    (format "Content, %s"
+                                            (truncate-string-to-width content 300 nil nil "..."))))))
                    (start (point)))
               (insert line)
-              (let ((line-end (1- (point))))  ; Exclude the newline
+              (let ((line-end (1- (point))))
                 (put-text-property start line-end 'mail-app-message-data message)
                 (put-text-property start line-end 'emacspeak-speak speech-text)
-                ;; Make the mark indicator audibly invisible to Emacspeak
                 (when marked
                   (put-text-property start (1+ start) 'auditory-icon nil))
                 (cond
                  (marked
                   (put-text-property start line-end 'face 'highlight))
                  ((not read)
-                  (put-text-property start line-end 'face 'bold))))))))
-      ;; Regular message list: show SUBJECT and FROM only (no redundant account/mailbox)
+                  (put-text-property start line-end 'face 'bold)))))))
+      ;; Regular message list: show SUBJECT and FROM only
       (progn
         (insert (format "%-2s %-4s %-60s %-40s\n"
                         "" "FLAG" "SUBJECT" "FROM"))
@@ -198,31 +282,36 @@
                                flag-str
                                (truncate-string-to-width subject 60 nil nil "...")
                                (truncate-string-to-width from 40 nil nil "...")))
-                 (speech-text (if (and content (not (string-empty-p content)))
-                                 (format "%s%s%s%s from %s. Message content: %s"
-                                        (if marked "Marked. " "")
-                                        (if (not read) "Unread. " "")
-                                        (if flagged "Flagged. " "")
-                                        subject from
-                                        (truncate-string-to-width content 300 nil nil "..."))
-                               (format "%s%s%s%s from %s"
-                                      (if marked "Marked. " "")
-                                      (if (not read) "Unread. " "")
-                                      (if flagged "Flagged. " "")
-                                      subject from)))
+                 (speech-text (mail-app--escape-for-speech
+                               (concat
+                                (if (and (not read) (not is-unread-view)) "Unread. " "")
+                                (if marked "Marked. " "")
+                                (if flagged "Flagged. " "")
+                                subject ". From " from ". "
+                                (when (and content (not (string-empty-p content)))
+                                  (format "Content, %s"
+                                          (truncate-string-to-width content 300 nil nil "..."))))))
                  (start (point)))
             (insert line)
-            (let ((line-end (1- (point))))  ; Exclude the newline
+            (let ((line-end (1- (point))))
               (put-text-property start line-end 'mail-app-message-data message)
               (put-text-property start line-end 'emacspeak-speak speech-text)
-              ;; Make the mark indicator audibly invisible to Emacspeak
               (when marked
                 (put-text-property start (1+ start) 'auditory-icon nil))
               (cond
                (marked
                 (put-text-property start line-end 'face 'highlight))
                ((not read)
-                (put-text-property start line-end 'face 'bold)))))))
+                (put-text-property start line-end 'face 'bold))))))))
+    ;; Footer: pagination status
+    (let* ((more-available (>= loaded-count page-limit))
+           (footer (if more-available
+                       (format "── %d messages  [N: load more] ──\n" loaded-count)
+                     (format "── %d messages  [end] ──\n" loaded-count))))
+      (insert (propertize footer 'face 'shadow
+                          'emacspeak-speak (if more-available
+                                              (format "%d messages shown, press N to load more" loaded-count)
+                                            (format "%d messages, end of list" loaded-count)))))
     (goto-char (point-min))
     (forward-line 4)))
 
@@ -252,7 +341,7 @@
         (insert (propertize "Date: " 'face 'bold) date "\n"))
       (insert "\n")
       (when-let* ((content (plist-get details :content)))
-        (insert content)))
+        (mail-app--insert-content content)))
      ((eq view-mode 'full)
       ;; Show all headers plus content
       (when-let* ((subject (plist-get details :subject)))
@@ -273,7 +362,7 @@
         (insert (propertize "Size: " 'face 'bold) (format "%d bytes" size) "\n"))
       (insert "\n")
       (when-let* ((content (plist-get details :content)))
-        (insert content)))
+        (mail-app--insert-content content)))
      ((eq view-mode 'attachments)
       ;; Show attachment list
       (let* ((attach-output (mail-app--run-command "attachments" "list" message-id
