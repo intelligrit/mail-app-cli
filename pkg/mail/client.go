@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
-	"strconv"
 	"strings"
-	"sync"
-	"time"
 )
 
 // Client provides an interface to interact with Mail.app via AppleScript
@@ -848,20 +845,21 @@ JSON.stringify(result);
 	return &message, nil
 }
 
-// uiArchiveMu serializes UI-driven archive operations: they manipulate the
-// shared Mail.app window selection, so concurrent runs would race.
-var uiArchiveMu sync.Mutex
-
 // ArchiveMessage moves a message to the provider's archive mailbox.
 //
-// Gmail accounts (detected by the presence of an "All Mail" mailbox) need
-// special handling: scripted moves out of INBOX behave as label copies on
-// Gmail's IMAP bridge — the message reappears in the inbox on the next sync.
-// The only operation that truly archives (removes the INBOX label, keeps the
-// message in All Mail) is Mail.app's own Archive command, which is not
-// scriptable directly, so we select the message in a viewer and invoke the
-// Message > Archive menu item via System Events. This requires Accessibility
-// permission for the invoking terminal and briefly brings Mail forward.
+// Gmail accounts (detected by the presence of an "All Mail" mailbox) are
+// refused: Mail.app offers no safe, scriptable archive for Gmail. Every
+// mechanism was tested and fails:
+//   - Scripted moves out of INBOX (mailbox property or the move command)
+//     behave as label copies on Gmail's IMAP bridge — the message reappears
+//     in the inbox on the next sync.
+//   - Moving through Trash (move to Trash, then move back out to All Mail)
+//     does archive, but races Gmail's "expunged from Trash = permanently
+//     deleted" rule and was observed to permanently delete messages.
+//   - message.deletedStatus is read-only.
+//   - Driving Mail's own Archive command works reliably but requires UI
+//     automation that activates Mail and steals focus.
+// Archiving Gmail from the CLI therefore needs the Gmail API, not Mail.app.
 //
 // Other providers (Exchange, Fastmail, ...) do real moves, so a plain move
 // to their "Archive" mailbox works.
@@ -878,8 +876,8 @@ try {
 	if (targetIdx < 0) {
 		'Error: Message not found';
 	} else if (resolveMailbox(acc, 'All Mail')) {
-		// Gmail: the caller must archive through the Mail.app UI.
-		'GMAIL_UI_ARCHIVE';
+		'Error: Gmail accounts cannot be archived safely via Mail.app scripting. ' +
+		'Archive it in Mail.app or Gmail directly, or use "messages delete" to move it to Trash.';
 	} else {
 		const archiveBox = resolveMailbox(acc, 'Archive');
 		if (archiveBox) {
@@ -900,159 +898,10 @@ try {
 	if err != nil {
 		return err
 	}
-	if strings.Contains(output, "GMAIL_UI_ARCHIVE") {
-		return c.archiveMessageViaUI(accountName, mailboxName, messageID)
-	}
 	if strings.Contains(output, "Error") {
 		return fmt.Errorf(output)
 	}
 	return nil
-}
-
-// archiveMessageViaUI archives a message by driving Mail.app's own Archive
-// command, the only operation Gmail honors as a true archive.
-//
-// Primary path: select the message in a viewer and click Message > Archive.
-// Setting a viewer's "selected messages" can land one row off the requested
-// message, so the selection is read back and self-corrected before clicking.
-// If the target row is unreachable (offset past the first row), fall back to
-// opening the message in its own window. In both paths the Archive menu item
-// is only clicked when enabled — it is disabled e.g. for windows opened in
-// All Mail context — so a disabled state surfaces as an error instead of a
-// silent no-op.
-func (c *Client) archiveMessageViaUI(accountName, mailboxName, messageID string) error {
-	uiArchiveMu.Lock()
-	defer uiArchiveMu.Unlock()
-
-	// The id is interpolated unquoted into AppleScript expressions, so insist
-	// it is numeric.
-	if _, err := strconv.ParseInt(messageID, 10, 64); err != nil {
-		return fmt.Errorf("invalid message id %q", messageID)
-	}
-
-	script := fmt.Sprintf(`
-on findIndexById(msgList, targetId)
-	tell application "Mail"
-		repeat with i from 1 to (count of msgList)
-			if (id of item i of msgList) is targetId then return i
-		end repeat
-	end tell
-	return 0
-end findIndexById
-
-set targetId to %s
-tell application "Mail"
-	activate
-	set theAcct to account "%s"
-	set theBox to mailbox "%s" of theAcct
-	if (count of message viewers) is 0 then make new message viewer
-	set theViewer to message viewer 1
-	set selected mailboxes of theViewer to {theBox}
-	delay 1
-	set msgList to messages of theBox
-end tell
-
-set targetIdx to my findIndexById(msgList, targetId)
-if targetIdx is 0 then return "Error: Message not found"
-set n to count of msgList
-
-set selOk to false
-set tryIdx to targetIdx
-repeat 4 times
-	tell application "Mail"
-		set selected messages of theViewer to {item tryIdx of msgList}
-		delay 0.5
-		set sel to selected messages of theViewer
-	end tell
-	if sel is not missing value then
-		if (count of sel) > 0 then
-			tell application "Mail" to set selId to id of item 1 of sel
-			if selId is targetId then
-				set selOk to true
-				exit repeat
-			end if
-			set selIdx to my findIndexById(msgList, selId)
-			if selIdx is 0 then exit repeat
-			-- Selection lands (selIdx - tryIdx) rows off; compensate.
-			set tryIdx to targetIdx - (selIdx - tryIdx)
-			if tryIdx < 1 or tryIdx > n then exit repeat
-		end if
-	end if
-end repeat
-
-if not selOk then
-	-- Fall back to opening the message in its own window.
-	tell application "Mail"
-		open (item targetIdx of msgList)
-		delay 1.5
-	end tell
-end if
-
-tell application "System Events"
-	tell process "Mail"
-		set frontmost to true
-		set archItem to menu item "Archive" of menu "Message" of menu bar 1
-		if enabled of archItem then
-			click archItem
-		else
-			return "Error: Archive menu item is disabled for this message"
-		end if
-	end tell
-end tell
-return "Success"
-`, messageID, escapeAppleScriptString(accountName), escapeAppleScriptString(mailboxName))
-
-	// The menu click can silently no-op while Mail is still activating or the
-	// message window is still loading, so verify the message actually left the
-	// mailbox and retry a couple of times if it didn't.
-	for attempt := 0; attempt < 3; attempt++ {
-		if exists, err := c.messageExistsInMailbox(accountName, mailboxName, messageID); err == nil && !exists {
-			return nil
-		}
-
-		output, err := c.runAppleScript(script)
-		if err != nil {
-			return fmt.Errorf("UI archive failed (System Events needs Accessibility permission for your terminal): %w", err)
-		}
-		if strings.Contains(output, "Error") {
-			return fmt.Errorf(output)
-		}
-
-		for i := 0; i < 5; i++ {
-			time.Sleep(1 * time.Second)
-			if exists, err := c.messageExistsInMailbox(accountName, mailboxName, messageID); err == nil && !exists {
-				return nil
-			}
-		}
-	}
-
-	return fmt.Errorf("message %s still in %s after UI archive attempts", messageID, mailboxName)
-}
-
-// messageExistsInMailbox reports whether a message id is present in a mailbox.
-func (c *Client) messageExistsInMailbox(accountName, mailboxName, messageID string) (bool, error) {
-	script := fmt.Sprintf(`
-const mail = Application('Mail');
-`+jsResolveMailbox+`
-try {
-	const acc = mail.accounts.byName('%s');
-	const mbox = resolveMailbox(acc, '%s');
-	if (!mbox) throw 'Mailbox not found';
-	const allIds = mbox.messages.id();
-	String(allIds.findIndex(id => String(id) === '%s') >= 0);
-} catch (e) {
-	'Error: ' + e;
-}
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
-
-	output, err := c.runJXA(script)
-	if err != nil {
-		return false, err
-	}
-	if strings.Contains(output, "Error") {
-		return false, fmt.Errorf(output)
-	}
-	return strings.Contains(output, "true"), nil
 }
 
 // MoveMessage moves a message to a different mailbox
