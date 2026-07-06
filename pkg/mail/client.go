@@ -824,55 +824,53 @@ func (c *Client) ArchiveMessage(accountName, mailboxName, messageID string) erro
 const mail = Application('Mail');
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
-	const allIds = mbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx < 0) {
-		'Error: Message not found';
-	} else {
-		function findArchiveCandidates(mailboxes, candidates) {
-			for (let j = 0; j < mailboxes.length; j++) {
-				const name = mailboxes[j].name();
-				if (name === 'All Mail' || name === 'Archive') {
-					candidates.push({ name: name, mailbox: mailboxes[j] });
-				}
-				try {
-					const sub = mailboxes[j].mailboxes();
-					if (sub.length > 0) {
-						findArchiveCandidates(sub, candidates);
-					}
-				} catch(e) {}
-			}
-		}
 
-		const archiveCandidates = [];
-		findArchiveCandidates(acc.mailboxes(), archiveCandidates);
-		let archiveBox = null;
-		for (let i = 0; i < archiveCandidates.length; i++) {
-			if (archiveCandidates[i].name === 'All Mail') {
-				archiveBox = archiveCandidates[i].mailbox;
-				break;
+	// Resolve mailboxes by walking the tree. byName() specifiers are broken
+	// for Gmail special mailboxes like "All Mail" ("Can't get object"), so
+	// always match names against enumerated mailbox objects.
+	function findMailboxes(mailboxes, wanted, found) {
+		for (let j = 0; j < mailboxes.length; j++) {
+			const name = mailboxes[j].name();
+			if (wanted.indexOf(name) >= 0 && !found[name]) {
+				found[name] = mailboxes[j];
 			}
-		}
-		if (!archiveBox) {
-			for (let i = 0; i < archiveCandidates.length; i++) {
-				if (archiveCandidates[i].name === 'Archive') {
-					archiveBox = archiveCandidates[i].mailbox;
-					break;
+			try {
+				const sub = mailboxes[j].mailboxes();
+				if (sub.length > 0) {
+					findMailboxes(sub, wanted, found);
 				}
-			}
+			} catch(e) {}
 		}
-		if (archiveBox) {
-			mbox.messages.at(targetIdx).mailbox = archiveBox;
-			'Success';
+	}
+
+	const found = {};
+	findMailboxes(acc.mailboxes(), ['%s', 'All Mail', 'Archive'], found);
+	const mbox = found['%s'];
+	if (!mbox) {
+		'Error: Source mailbox not found';
+	} else {
+		const allIds = mbox.messages.id();
+		const targetIdx = allIds.findIndex(id => String(id) === '%s');
+		if (targetIdx < 0) {
+			'Error: Message not found';
 		} else {
-			'Error: Archive mailbox not found';
+			// Gmail exposes archived mail as "All Mail"; prefer it, then fall
+			// back to a conventional "Archive" mailbox.
+			const archiveBox = found['All Mail'] || found['Archive'];
+			if (archiveBox) {
+				// Use the move command; assigning the mailbox property is
+				// silently ignored for Gmail mailboxes.
+				mail.move(mbox.messages.at(targetIdx), { to: archiveBox });
+				'Success';
+			} else {
+				'Error: Archive mailbox not found';
+			}
 		}
 	}
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
+`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(mailboxName), escapeJSString(messageID))
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -890,20 +888,49 @@ func (c *Client) MoveMessage(accountName, sourceMailbox, messageID, targetMailbo
 const mail = Application('Mail');
 try {
 	const acc = mail.accounts.byName('%s');
-	const sourceMbox = acc.mailboxes.byName('%s');
-	const allIds = sourceMbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx < 0) {
-		'Error: Message not found';
+
+	// Resolve mailboxes by walking the tree. byName() specifiers are broken
+	// for Gmail special mailboxes like "All Mail" ("Can't get object"), so
+	// always match names against enumerated mailbox objects.
+	function findMailboxes(mailboxes, wanted, found) {
+		for (let j = 0; j < mailboxes.length; j++) {
+			const name = mailboxes[j].name();
+			if (wanted.indexOf(name) >= 0 && !found[name]) {
+				found[name] = mailboxes[j];
+			}
+			try {
+				const sub = mailboxes[j].mailboxes();
+				if (sub.length > 0) {
+					findMailboxes(sub, wanted, found);
+				}
+			} catch(e) {}
+		}
+	}
+
+	const found = {};
+	findMailboxes(acc.mailboxes(), ['%s', '%s'], found);
+	const sourceMbox = found['%s'];
+	const destMbox = found['%s'];
+	if (!sourceMbox) {
+		'Error: Source mailbox not found';
+	} else if (!destMbox) {
+		'Error: Destination mailbox not found';
 	} else {
-		const destMbox = acc.mailboxes.byName('%s');
-		sourceMbox.messages.at(targetIdx).mailbox = destMbox;
-		'Success';
+		const allIds = sourceMbox.messages.id();
+		const targetIdx = allIds.findIndex(id => String(id) === '%s');
+		if (targetIdx < 0) {
+			'Error: Message not found';
+		} else {
+			// Use the move command; assigning the mailbox property is
+			// silently ignored for Gmail mailboxes.
+			mail.move(sourceMbox.messages.at(targetIdx), { to: destMbox });
+			'Success';
+		}
 	}
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(sourceMailbox), escapeJSString(messageID), escapeJSString(targetMailbox))
+`, escapeJSString(accountName), escapeJSString(sourceMailbox), escapeJSString(targetMailbox), escapeJSString(sourceMailbox), escapeJSString(targetMailbox), escapeJSString(messageID))
 
 	output, err := c.runJXA(script)
 	if err != nil {
