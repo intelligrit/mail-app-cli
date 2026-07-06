@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // Client provides an interface to interact with Mail.app via AppleScript
@@ -111,6 +114,29 @@ type Attachment struct {
 }
 
 // GetAccounts retrieves all Mail.app accounts
+// jsResolveMailbox defines a JXA helper that resolves a mailbox by walking
+// the account's mailbox tree. byName() specifiers are broken for Gmail
+// special mailboxes like "All Mail" ("Can't get object"), so scripts must
+// match names against enumerated mailbox objects instead.
+const jsResolveMailbox = `
+function resolveMailbox(acc, name) {
+	function walk(mailboxes) {
+		for (let j = 0; j < mailboxes.length; j++) {
+			if (mailboxes[j].name() === name) return mailboxes[j];
+			try {
+				const sub = mailboxes[j].mailboxes();
+				if (sub.length > 0) {
+					const found = walk(sub);
+					if (found) return found;
+				}
+			} catch (e) {}
+		}
+		return null;
+	}
+	return walk(acc.mailboxes());
+}
+`
+
 func (c *Client) GetAccounts() ([]Account, error) {
 	script := `
 	tell application "Mail"
@@ -267,9 +293,11 @@ func (c *Client) MarkMessageAsRead(accountName, mailboxName, messageID string, r
 
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
 	const allIds = mbox.messages.id();
 	const targetIdx = allIds.findIndex(id => String(id) === '%s');
 	if (targetIdx < 0) {
@@ -302,9 +330,11 @@ func (c *Client) FlagMessage(accountName, mailboxName, messageID string, flagged
 
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
 	const allIds = mbox.messages.id();
 	const targetIdx = allIds.findIndex(id => String(id) === '%s');
 	if (targetIdx < 0) {
@@ -332,9 +362,11 @@ try {
 func (c *Client) DeleteMessage(accountName, mailboxName, messageID string) error {
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
 	const allIds = mbox.messages.id();
 	const targetIdx = allIds.findIndex(id => String(id) === '%s');
 	if (targetIdx < 0) {
@@ -686,10 +718,11 @@ func (c *Client) GetMessagesJSON(accountName, mailboxName string, limit, offset 
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 const result = [];
-
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
 	const accName = acc.name();
 	const mboxName = mbox.name();
 	const messages = mbox.messages();
@@ -751,10 +784,11 @@ func (c *Client) GetMessageDetailsJSON(accountName, mailboxName, messageID strin
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 let result = null;
-
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
 	const allIds = mbox.messages.id();
 	const targetIdx = allIds.findIndex(id => String(id) === '%s');
 	if (targetIdx >= 0) {
@@ -814,67 +848,60 @@ JSON.stringify(result);
 	return &message, nil
 }
 
+// uiArchiveMu serializes UI-driven archive operations: they manipulate the
+// shared Mail.app window selection, so concurrent runs would race.
+var uiArchiveMu sync.Mutex
+
 // ArchiveMessage moves a message to the provider's archive mailbox.
-// Gmail exposes archived mail as "All Mail", and some Gmail accounts can also
-// have a user-created "Archive" label. Prefer "All Mail" when present, then
-// fall back to "Archive" for providers that expose a conventional archive
-// mailbox. Search recursively because some providers nest special mailboxes.
+//
+// Gmail accounts (detected by the presence of an "All Mail" mailbox) need
+// special handling: scripted moves out of INBOX behave as label copies on
+// Gmail's IMAP bridge — the message reappears in the inbox on the next sync.
+// The only operation that truly archives (removes the INBOX label, keeps the
+// message in All Mail) is Mail.app's own Archive command, which is not
+// scriptable directly, so we select the message in a viewer and invoke the
+// Message > Archive menu item via System Events. This requires Accessibility
+// permission for the invoking terminal and briefly brings Mail forward.
+//
+// Other providers (Exchange, Fastmail, ...) do real moves, so a plain move
+// to their "Archive" mailbox works.
 func (c *Client) ArchiveMessage(accountName, mailboxName, messageID string) error {
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-
-	// Resolve mailboxes by walking the tree. byName() specifiers are broken
-	// for Gmail special mailboxes like "All Mail" ("Can't get object"), so
-	// always match names against enumerated mailbox objects.
-	function findMailboxes(mailboxes, wanted, found) {
-		for (let j = 0; j < mailboxes.length; j++) {
-			const name = mailboxes[j].name();
-			if (wanted.indexOf(name) >= 0 && !found[name]) {
-				found[name] = mailboxes[j];
-			}
-			try {
-				const sub = mailboxes[j].mailboxes();
-				if (sub.length > 0) {
-					findMailboxes(sub, wanted, found);
-				}
-			} catch(e) {}
-		}
-	}
-
-	const found = {};
-	findMailboxes(acc.mailboxes(), ['%s', 'All Mail', 'Archive'], found);
-	const mbox = found['%s'];
-	if (!mbox) {
-		'Error: Source mailbox not found';
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Source mailbox not found';
+	const allIds = mbox.messages.id();
+	const targetIdx = allIds.findIndex(id => String(id) === '%s');
+	if (targetIdx < 0) {
+		'Error: Message not found';
+	} else if (resolveMailbox(acc, 'All Mail')) {
+		// Gmail: the caller must archive through the Mail.app UI.
+		'GMAIL_UI_ARCHIVE';
 	} else {
-		const allIds = mbox.messages.id();
-		const targetIdx = allIds.findIndex(id => String(id) === '%s');
-		if (targetIdx < 0) {
-			'Error: Message not found';
+		const archiveBox = resolveMailbox(acc, 'Archive');
+		if (archiveBox) {
+			// Use the move command; assigning the mailbox property is
+			// silently ignored for Gmail mailboxes.
+			mail.move(mbox.messages.at(targetIdx), { to: archiveBox });
+			'Success';
 		} else {
-			// Gmail exposes archived mail as "All Mail"; prefer it, then fall
-			// back to a conventional "Archive" mailbox.
-			const archiveBox = found['All Mail'] || found['Archive'];
-			if (archiveBox) {
-				// Use the move command; assigning the mailbox property is
-				// silently ignored for Gmail mailboxes.
-				mail.move(mbox.messages.at(targetIdx), { to: archiveBox });
-				'Success';
-			} else {
-				'Error: Archive mailbox not found';
-			}
+			'Error: Archive mailbox not found';
 		}
 	}
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(mailboxName), escapeJSString(messageID))
+`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
 
 	output, err := c.runJXA(script)
 	if err != nil {
 		return err
+	}
+	if strings.Contains(output, "GMAIL_UI_ARCHIVE") {
+		return c.archiveMessageViaUI(accountName, mailboxName, messageID)
 	}
 	if strings.Contains(output, "Error") {
 		return fmt.Errorf(output)
@@ -882,55 +909,122 @@ try {
 	return nil
 }
 
+// archiveMessageViaUI opens the message in its own Mail.app window and
+// invokes the Message > Archive menu item, falling back to the ⌃⌘A shortcut
+// if the menu item name is unavailable (e.g. localized UI). The message is
+// opened in a window rather than selected in the viewer list because setting
+// a viewer's "selected messages" lands one row off the requested message,
+// archiving the wrong one.
+func (c *Client) archiveMessageViaUI(accountName, mailboxName, messageID string) error {
+	uiArchiveMu.Lock()
+	defer uiArchiveMu.Unlock()
+
+	// The id is interpolated unquoted into the AppleScript whose-clause, so
+	// insist it is numeric.
+	if _, err := strconv.ParseInt(messageID, 10, 64); err != nil {
+		return fmt.Errorf("invalid message id %q", messageID)
+	}
+
+	script := fmt.Sprintf(`
+tell application "Mail"
+	activate
+	set theAcct to account "%s"
+	set theBox to mailbox "%s" of theAcct
+	set theMsgs to (messages of theBox whose id is %s)
+	if (count of theMsgs) is 0 then return "Error: Message not found"
+	open (item 1 of theMsgs)
+	delay 1.5
+end tell
+tell application "System Events"
+	tell process "Mail"
+		try
+			click menu item "Archive" of menu "Message" of menu bar 1
+		on error
+			keystroke "a" using {control down, command down}
+		end try
+	end tell
+end tell
+return "Success"
+`, escapeAppleScriptString(accountName), escapeAppleScriptString(mailboxName), messageID)
+
+	// The menu click can silently no-op while Mail is still activating or the
+	// message window is still loading, so verify the message actually left the
+	// mailbox and retry a couple of times if it didn't.
+	for attempt := 0; attempt < 3; attempt++ {
+		if exists, err := c.messageExistsInMailbox(accountName, mailboxName, messageID); err == nil && !exists {
+			return nil
+		}
+
+		output, err := c.runAppleScript(script)
+		if err != nil {
+			return fmt.Errorf("UI archive failed (System Events needs Accessibility permission for your terminal): %w", err)
+		}
+		if strings.Contains(output, "Error") {
+			return fmt.Errorf(output)
+		}
+
+		for i := 0; i < 5; i++ {
+			time.Sleep(1 * time.Second)
+			if exists, err := c.messageExistsInMailbox(accountName, mailboxName, messageID); err == nil && !exists {
+				return nil
+			}
+		}
+	}
+
+	return fmt.Errorf("message %s still in %s after UI archive attempts", messageID, mailboxName)
+}
+
+// messageExistsInMailbox reports whether a message id is present in a mailbox.
+func (c *Client) messageExistsInMailbox(accountName, mailboxName, messageID string) (bool, error) {
+	script := fmt.Sprintf(`
+const mail = Application('Mail');
+`+jsResolveMailbox+`
+try {
+	const acc = mail.accounts.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
+	const allIds = mbox.messages.id();
+	String(allIds.findIndex(id => String(id) === '%s') >= 0);
+} catch (e) {
+	'Error: ' + e;
+}
+`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
+
+	output, err := c.runJXA(script)
+	if err != nil {
+		return false, err
+	}
+	if strings.Contains(output, "Error") {
+		return false, fmt.Errorf(output)
+	}
+	return strings.Contains(output, "true"), nil
+}
+
 // MoveMessage moves a message to a different mailbox
 func (c *Client) MoveMessage(accountName, sourceMailbox, messageID, targetMailbox string) error {
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-
-	// Resolve mailboxes by walking the tree. byName() specifiers are broken
-	// for Gmail special mailboxes like "All Mail" ("Can't get object"), so
-	// always match names against enumerated mailbox objects.
-	function findMailboxes(mailboxes, wanted, found) {
-		for (let j = 0; j < mailboxes.length; j++) {
-			const name = mailboxes[j].name();
-			if (wanted.indexOf(name) >= 0 && !found[name]) {
-				found[name] = mailboxes[j];
-			}
-			try {
-				const sub = mailboxes[j].mailboxes();
-				if (sub.length > 0) {
-					findMailboxes(sub, wanted, found);
-				}
-			} catch(e) {}
-		}
-	}
-
-	const found = {};
-	findMailboxes(acc.mailboxes(), ['%s', '%s'], found);
-	const sourceMbox = found['%s'];
-	const destMbox = found['%s'];
-	if (!sourceMbox) {
-		'Error: Source mailbox not found';
-	} else if (!destMbox) {
-		'Error: Destination mailbox not found';
+	const sourceMbox = resolveMailbox(acc, '%s');
+	if (!sourceMbox) throw 'Source mailbox not found';
+	const destMbox = resolveMailbox(acc, '%s');
+	if (!destMbox) throw 'Destination mailbox not found';
+	const allIds = sourceMbox.messages.id();
+	const targetIdx = allIds.findIndex(id => String(id) === '%s');
+	if (targetIdx < 0) {
+		'Error: Message not found';
 	} else {
-		const allIds = sourceMbox.messages.id();
-		const targetIdx = allIds.findIndex(id => String(id) === '%s');
-		if (targetIdx < 0) {
-			'Error: Message not found';
-		} else {
-			// Use the move command; assigning the mailbox property is
-			// silently ignored for Gmail mailboxes.
-			mail.move(sourceMbox.messages.at(targetIdx), { to: destMbox });
-			'Success';
-		}
+		// Use the move command; assigning the mailbox property is
+		// silently ignored for Gmail mailboxes.
+		mail.move(sourceMbox.messages.at(targetIdx), { to: destMbox });
+		'Success';
 	}
 } catch (e) {
 	'Error: ' + e;
 }
-`, escapeJSString(accountName), escapeJSString(sourceMailbox), escapeJSString(targetMailbox), escapeJSString(sourceMailbox), escapeJSString(targetMailbox), escapeJSString(messageID))
+`, escapeJSString(accountName), escapeJSString(sourceMailbox), escapeJSString(targetMailbox), escapeJSString(messageID))
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -947,10 +1041,11 @@ func (c *Client) GetAttachmentsJSON(accountName, mailboxName, messageID string) 
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 const result = [];
-
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
 	const allIds = mbox.messages.id();
 	const targetIdx = allIds.findIndex(id => String(id) === '%s');
 	if (targetIdx >= 0) {
@@ -996,10 +1091,11 @@ func (c *Client) SaveAttachment(accountName, mailboxName, messageID, attachmentN
 const mail = Application('Mail');
 const app = Application.currentApplication();
 app.includeStandardAdditions = true;
-
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
 	const allIds = mbox.messages.id();
 	const targetIdx = allIds.findIndex(id => String(id) === '%s');
 	if (targetIdx < 0) {
@@ -1128,10 +1224,11 @@ const mail = Application('Mail');
 const result = [];
 const searchTerm = '%s'.toLowerCase();
 const maxResults = %d;
-
+`+jsResolveMailbox+`
 try {
 	const acc = mail.accounts.byName('%s');
-	const mbox = acc.mailboxes.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
 	const accName = acc.name();
 	const mboxName = mbox.name();
 	const messages = mbox.messages();
@@ -1515,7 +1612,7 @@ func (c *Client) BulkArchiveMessages(requests []struct {
 // inbox/unread/flagged use the accounts-based path (GetMessagesFromMultipleMailboxes
 // → GetMessagesJSON per account INBOX) because mailbox objects from
 // mail.inboxes() don't support the same bulk property operations as those
-// obtained via acc.mailboxes.byName(), causing unreliable filtering.
+// resolved from the account's own mailbox tree, causing unreliable filtering.
 //
 // sent/drafts/trash/junk use Mail.app's JXA special-mailbox accessors
 // (mail.sentMailboxes() etc.) which don't require per-message filtering.
