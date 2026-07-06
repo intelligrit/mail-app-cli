@@ -120,8 +120,15 @@ mail-app-cli messages flag <message-id> -a "Gmail" -m "INBOX" --flagged=false
 Archive a message:
 
 ```bash
-mail-app-cli messages archive <message-id> -a "Gmail" -m "INBOX"
+mail-app-cli messages archive <message-id> -a "Exchange" -m "Inbox"
 ```
+
+> **Gmail limitation:** archiving is refused for Gmail accounts. Mail.app
+> offers no safe scriptable archive for Gmail — scripted moves out of INBOX
+> silently revert on the next sync, and the only workaround that sticks
+> (bouncing the message through Trash) can permanently delete mail. Archive
+> Gmail messages in Mail.app or Gmail itself, or use `messages delete` to
+> send them to Trash.
 
 Move a message to another mailbox:
 
@@ -279,12 +286,12 @@ if [ $unread -gt 0 ]; then
 fi
 ```
 
-#### Archive all read messages
+#### Archive all read messages (non-Gmail accounts)
 
 ```bash
 #!/bin/bash
-mail-app-cli messages list -a "Gmail" -m "INBOX" | jq -r '.[] | select(.read==true) | .id' | while read -r msg_id; do
-  mail-app-cli messages archive "$msg_id" -a "Gmail" -m "INBOX"
+mail-app-cli messages list -a "Exchange" -m "Inbox" | jq -r '.[] | select(.read==true) | .id' | while read -r msg_id; do
+  mail-app-cli messages archive "$msg_id" -a "Exchange" -m "Inbox"
 done
 ```
 
