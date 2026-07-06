@@ -909,43 +909,98 @@ try {
 	return nil
 }
 
-// archiveMessageViaUI opens the message in its own Mail.app window and
-// invokes the Message > Archive menu item, falling back to the ⌃⌘A shortcut
-// if the menu item name is unavailable (e.g. localized UI). The message is
-// opened in a window rather than selected in the viewer list because setting
-// a viewer's "selected messages" lands one row off the requested message,
-// archiving the wrong one.
+// archiveMessageViaUI archives a message by driving Mail.app's own Archive
+// command, the only operation Gmail honors as a true archive.
+//
+// Primary path: select the message in a viewer and click Message > Archive.
+// Setting a viewer's "selected messages" can land one row off the requested
+// message, so the selection is read back and self-corrected before clicking.
+// If the target row is unreachable (offset past the first row), fall back to
+// opening the message in its own window. In both paths the Archive menu item
+// is only clicked when enabled — it is disabled e.g. for windows opened in
+// All Mail context — so a disabled state surfaces as an error instead of a
+// silent no-op.
 func (c *Client) archiveMessageViaUI(accountName, mailboxName, messageID string) error {
 	uiArchiveMu.Lock()
 	defer uiArchiveMu.Unlock()
 
-	// The id is interpolated unquoted into the AppleScript whose-clause, so
-	// insist it is numeric.
+	// The id is interpolated unquoted into AppleScript expressions, so insist
+	// it is numeric.
 	if _, err := strconv.ParseInt(messageID, 10, 64); err != nil {
 		return fmt.Errorf("invalid message id %q", messageID)
 	}
 
 	script := fmt.Sprintf(`
+on findIndexById(msgList, targetId)
+	tell application "Mail"
+		repeat with i from 1 to (count of msgList)
+			if (id of item i of msgList) is targetId then return i
+		end repeat
+	end tell
+	return 0
+end findIndexById
+
+set targetId to %s
 tell application "Mail"
 	activate
 	set theAcct to account "%s"
 	set theBox to mailbox "%s" of theAcct
-	set theMsgs to (messages of theBox whose id is %s)
-	if (count of theMsgs) is 0 then return "Error: Message not found"
-	open (item 1 of theMsgs)
-	delay 1.5
+	if (count of message viewers) is 0 then make new message viewer
+	set theViewer to message viewer 1
+	set selected mailboxes of theViewer to {theBox}
+	delay 1
+	set msgList to messages of theBox
 end tell
+
+set targetIdx to my findIndexById(msgList, targetId)
+if targetIdx is 0 then return "Error: Message not found"
+set n to count of msgList
+
+set selOk to false
+set tryIdx to targetIdx
+repeat 4 times
+	tell application "Mail"
+		set selected messages of theViewer to {item tryIdx of msgList}
+		delay 0.5
+		set sel to selected messages of theViewer
+	end tell
+	if sel is not missing value then
+		if (count of sel) > 0 then
+			tell application "Mail" to set selId to id of item 1 of sel
+			if selId is targetId then
+				set selOk to true
+				exit repeat
+			end if
+			set selIdx to my findIndexById(msgList, selId)
+			if selIdx is 0 then exit repeat
+			-- Selection lands (selIdx - tryIdx) rows off; compensate.
+			set tryIdx to targetIdx - (selIdx - tryIdx)
+			if tryIdx < 1 or tryIdx > n then exit repeat
+		end if
+	end if
+end repeat
+
+if not selOk then
+	-- Fall back to opening the message in its own window.
+	tell application "Mail"
+		open (item targetIdx of msgList)
+		delay 1.5
+	end tell
+end if
+
 tell application "System Events"
 	tell process "Mail"
-		try
-			click menu item "Archive" of menu "Message" of menu bar 1
-		on error
-			keystroke "a" using {control down, command down}
-		end try
+		set frontmost to true
+		set archItem to menu item "Archive" of menu "Message" of menu bar 1
+		if enabled of archItem then
+			click archItem
+		else
+			return "Error: Archive menu item is disabled for this message"
+		end if
 	end tell
 end tell
 return "Success"
-`, escapeAppleScriptString(accountName), escapeAppleScriptString(mailboxName), messageID)
+`, messageID, escapeAppleScriptString(accountName), escapeAppleScriptString(mailboxName))
 
 	// The menu click can silently no-op while Mail is still activating or the
 	// message window is still loading, so verify the message actually left the
