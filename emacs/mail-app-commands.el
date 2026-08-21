@@ -673,7 +673,12 @@ Uses the faster unified junk mailbox from Mail.app."
                      (if (null new-messages)
                          (mail-app--speak "No more messages" 'warn-user)
                        (setq mail-app-current-offset new-offset)
-                       (setq mail-app-messages-data (append mail-app-messages-data new-messages))
+                       (let ((existing-ids (mapcar (lambda (m) (plist-get m :id))
+                                                   mail-app-messages-data)))
+                         (setq mail-app-messages-data
+                               (append mail-app-messages-data
+                                       (seq-remove (lambda (m) (member (plist-get m :id) existing-ids))
+                                                   new-messages))))
                        (mail-app--format-messages mail-app-messages-data)
                        (mail-app--speak (format "Loaded %d more, %d total"
                                                 (length new-messages)
@@ -1598,11 +1603,11 @@ each message. When disabled, only subject and sender are read."
       (let* ((buf (current-buffer))
              (operations
               (mapcar (lambda (id)
-                        (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                        (let* ((msg (seq-find (lambda (m) (equal (plist-get m :id) id))
                                               mail-app-messages-data))
                                (account (or (plist-get msg :account) mail-app-current-account))
                                (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-                          (list "messages" "delete" id "-a" account "-m" mailbox)))
+                          (list "messages" "delete" (format "%s" id) "-a" account "-m" mailbox)))
                       mail-app-marked-messages)))
         (setq mail-app-marked-messages nil)
         (mail-app--run-bulk-async
@@ -1631,11 +1636,11 @@ each message. When disabled, only subject and sender are read."
     (let* ((buf (current-buffer))
            (operations
             (mapcar (lambda (id)
-                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                      (let* ((msg (seq-find (lambda (m) (equal (plist-get m :id) id))
                                             mail-app-messages-data))
                              (account (or (plist-get msg :account) mail-app-current-account))
                              (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-                        (list "messages" "archive" id "-a" account "-m" mailbox)))
+                        (list "messages" "archive" (format "%s" id) "-a" account "-m" mailbox)))
                     mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
       (mail-app--run-bulk-async
@@ -1664,11 +1669,11 @@ each message. When disabled, only subject and sender are read."
     (let* ((buf (current-buffer))
            (operations
             (mapcar (lambda (id)
-                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                      (let* ((msg (seq-find (lambda (m) (equal (plist-get m :id) id))
                                             mail-app-messages-data))
                              (account (or (plist-get msg :account) mail-app-current-account))
                              (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-                        (list "messages" "flag" id "-a" account "-m" mailbox "--flagged=true")))
+                        (list "messages" "flag" (format "%s" id) "-a" account "-m" mailbox "--flagged=true")))
                     mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
       (mail-app--run-bulk-async
@@ -1697,11 +1702,11 @@ each message. When disabled, only subject and sender are read."
     (let* ((buf (current-buffer))
            (operations
             (mapcar (lambda (id)
-                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                      (let* ((msg (seq-find (lambda (m) (equal (plist-get m :id) id))
                                             mail-app-messages-data))
                              (account (or (plist-get msg :account) mail-app-current-account))
                              (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-                        (list "messages" "mark" id "-a" account "-m" mailbox "--read=true")))
+                        (list "messages" "mark" (format "%s" id) "-a" account "-m" mailbox "--read=true")))
                     mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
       (mail-app--run-bulk-async
@@ -1730,11 +1735,11 @@ each message. When disabled, only subject and sender are read."
     (let* ((buf (current-buffer))
            (operations
             (mapcar (lambda (id)
-                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                      (let* ((msg (seq-find (lambda (m) (equal (plist-get m :id) id))
                                             mail-app-messages-data))
                              (account (or (plist-get msg :account) mail-app-current-account))
                              (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-                        (list "messages" "mark" id "-a" account "-m" mailbox "--read=false")))
+                        (list "messages" "mark" (format "%s" id) "-a" account "-m" mailbox "--read=false")))
                     mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
       (mail-app--run-bulk-async
@@ -1763,11 +1768,11 @@ each message. When disabled, only subject and sender are read."
     (let* ((buf (current-buffer))
            (operations
             (mapcar (lambda (id)
-                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                      (let* ((msg (seq-find (lambda (m) (equal (plist-get m :id) id))
                                             mail-app-messages-data))
                              (account (or (plist-get msg :account) mail-app-current-account))
                              (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-                        (list "messages" "move" id "Junk" "-a" account "-m" mailbox)))
+                        (list "messages" "move" (format "%s" id) "Junk" "-a" account "-m" mailbox)))
                     mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
       (mail-app--run-bulk-async
@@ -1802,11 +1807,11 @@ each message. When disabled, only subject and sender are read."
     (let* ((buf (current-buffer))
            (operations
             (mapcar (lambda (id)
-                      (let* ((msg (seq-find (lambda (m) (string= (plist-get m :id) id))
+                      (let* ((msg (seq-find (lambda (m) (equal (plist-get m :id) id))
                                             mail-app-messages-data))
                              (account (or (plist-get msg :account) mail-app-current-account))
                              (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox)))
-                        (list "messages" "move" id target-mailbox "-a" account "-m" mailbox)))
+                        (list "messages" "move" (format "%s" id) target-mailbox "-a" account "-m" mailbox)))
                     mail-app-marked-messages)))
       (setq mail-app-marked-messages nil)
       (mail-app--run-bulk-async

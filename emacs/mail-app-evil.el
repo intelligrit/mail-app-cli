@@ -34,6 +34,27 @@
   (add-hook 'mail-app-messages-mode-hook 'evil-normal-state)
   (add-hook 'mail-app-message-view-mode-hook 'evil-normal-state)
 
+  ;; Use evil-local-set-key in mode hooks for highest-priority RET bindings.
+  ;; evil-define-key on the mode map is sometimes overridden by evil's own
+  ;; state maps; buffer-local keys set via evil-local-set-key always win.
+  (when (fboundp 'evil-local-set-key)
+    (add-hook 'mail-app-accounts-mode-hook
+              (lambda ()
+                (evil-local-set-key 'normal (kbd "RET") 'mail-app-view-mailboxes-at-point)
+                (evil-local-set-key 'motion (kbd "RET") 'mail-app-view-mailboxes-at-point)))
+    (add-hook 'mail-app-mailboxes-mode-hook
+              (lambda ()
+                (evil-local-set-key 'normal (kbd "RET") 'mail-app-view-messages-at-point)
+                (evil-local-set-key 'motion (kbd "RET") 'mail-app-view-messages-at-point)))
+    (add-hook 'mail-app-messages-mode-hook
+              (lambda ()
+                (evil-local-set-key 'normal (kbd "RET") 'mail-app-view-message-at-point)
+                (evil-local-set-key 'motion (kbd "RET") 'mail-app-view-message-at-point)))
+    (add-hook 'mail-app-message-view-mode-hook
+              (lambda ()
+                (evil-local-set-key 'normal (kbd "RET") 'mail-app-save-attachment-at-point)
+                (evil-local-set-key 'motion (kbd "RET") 'mail-app-save-attachment-at-point))))
+
   ;; Define evil keybindings
   (when (fboundp 'evil-define-key)
     (evil-define-key '(normal motion) mail-app-accounts-mode-map
@@ -46,6 +67,12 @@
       "r" 'mail-app-refresh
       "s" 'mail-app-search
       "S" 'mail-app-search-all
+      ;; Unified mailbox shortcuts
+      "I" 'mail-app-list-inbox
+      "U" 'mail-app-list-unread
+      "G" 'mail-app-list-sent
+      "D" 'mail-app-list-drafts
+      "*" 'mail-app-list-flagged
       "q" 'quit-window
       "ZZ" 'quit-window
       "ZQ" 'quit-window
@@ -62,6 +89,12 @@
       "r" 'mail-app-refresh
       "s" 'mail-app-search
       "S" 'mail-app-search-all
+      ;; Unified mailbox shortcuts
+      "I" 'mail-app-list-inbox
+      "U" 'mail-app-list-unread
+      "G" 'mail-app-list-sent
+      "D" 'mail-app-list-drafts
+      "*" 'mail-app-list-flagged
       "q" 'quit-window
       "ZZ" 'quit-window
       "ZQ" 'quit-window
@@ -111,6 +144,7 @@
       "F" 'mail-app-forward-current-message
       (kbd "TAB") 'mail-app-cycle-view
       (kbd "<backtab>") 'mail-app-cycle-view-reverse
+      "b" 'mail-app-jump-to-body
       "c" 'mail-app-compose
       "J" 'mail-app-jump-to-mail-app
       "f" 'mail-app-flag-current-message

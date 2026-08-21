@@ -38,8 +38,20 @@ If nil, you will be prompted to select one when needed."
 
 
 (defcustom mail-app-message-limit 15
-  "Default number of messages to display."
+  "Minimum number of messages to fetch.  The actual fetch count is computed
+dynamically from the window height; this value is the floor."
   :type 'integer
+  :group 'mail-app)
+
+
+
+(defcustom mail-app-render-html t
+  "If non-nil, render HTML email content using Emacs's shr renderer.
+shr produces clean, screen-reader-friendly output: links are announced
+with their text, headings use a different voice, and Emacspeak's full
+shr integration applies.  Requires Emacs built with libxml2 (check with
+`(fboundp 'libxml-parse-html-region)').  Set to nil to see raw text."
+  :type 'boolean
   :group 'mail-app)
 
 
@@ -149,6 +161,12 @@ Options:
     (define-key map (kbd "o") 'mail-app-toggle-accounts-sort)
     (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "J") 'mail-app-jump-to-mail-app)
+    ;; Unified mailbox shortcuts
+    (define-key map (kbd "I") 'mail-app-list-inbox)
+    (define-key map (kbd "U") 'mail-app-list-unread)
+    (define-key map (kbd "G") 'mail-app-list-sent)      ; G = "sent/gone"
+    (define-key map (kbd "D") 'mail-app-list-drafts)
+    (define-key map (kbd "*") 'mail-app-list-flagged)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
     map)
@@ -169,6 +187,12 @@ Options:
     (define-key map (kbd "T") 'mail-app-mark-mailbox-as-read)
     (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "J") 'mail-app-jump-to-mail-app)
+    ;; Unified mailbox shortcuts
+    (define-key map (kbd "I") 'mail-app-list-inbox)
+    (define-key map (kbd "U") 'mail-app-list-unread)
+    (define-key map (kbd "G") 'mail-app-list-sent)      ; G = "sent/gone"
+    (define-key map (kbd "D") 'mail-app-list-drafts)
+    (define-key map (kbd "*") 'mail-app-list-flagged)
     (define-key map (kbd "q") 'quit-window)
     (define-key map (kbd "?") 'describe-mode)
     map)
@@ -290,6 +314,29 @@ Options:
 
 
 
+(defvar-local mail-app-current-limit nil
+  "Number of messages fetched per page in this buffer.
+Set when the buffer is first loaded; reused by `mail-app-load-more-messages'
+so that every page uses the same batch size even if the window is resized.")
+
+
+
+(defun mail-app--compute-message-limit ()
+  "Return how many messages to fetch based on the current window height.
+Uses `mail-app-message-limit' as the minimum."
+  (let* ((height (window-body-height))
+         ;; 4 fixed header rows (title blank col-headers separator) + 2 safety
+         (usable (- height 6)))
+    (max mail-app-message-limit usable)))
+
+
+
+(defvar-local mail-app-body-start nil
+  "Marker at the start of message body content in a message-view buffer.
+Set when the message is rendered; used by `mail-app-jump-to-body'.")
+
+
+
 (defvar-local mail-app-current-view-mode 'plain
   "Current view mode for message: 'plain (content only), 'full (with headers), or 'attachments.")
 
@@ -302,6 +349,13 @@ Options:
 
 (defvar-local mail-app-message-sort-reverse nil
   "If non-nil, reverse the sort order.")
+
+
+
+(defvar-local mail-app-unified-view nil
+  "Type of unified view being displayed.
+Possible values: nil (standard account/mailbox view), 'inbox, 'unread,
+'sent, 'drafts, 'flagged, 'trash, 'junk.")
 
 
 
@@ -382,30 +436,58 @@ Returns the signature text or nil if none is configured."
      :sentinel
      (lambda (process event)
        (condition-case sentinel-err
-           (progn
-             (when (string-match-p "finished" event)
-               (let ((buf (process-buffer process)))
-                 (when (buffer-live-p buf)
-                   ;; Extract output FIRST while buffer is alive
-                   (let ((output (with-current-buffer buf
-                                   (buffer-substring-no-properties (point-min) (point-max)))))
-                     ;; THEN call callback with the extracted string
+           (let ((buf (process-buffer process)))
+             (when (and (buffer-live-p buf)
+                        (string-match-p "\\(?:finished\\|exited abnormally\\)" event))
+               (let ((output (with-current-buffer buf
+                               (buffer-substring-no-properties (point-min) (point-max)))))
+                 (kill-buffer buf)
+                 (if (string-match-p "finished" event)
                      (condition-case err
                          (funcall callback output)
                        (error (message "Mail-app callback error: %S\nCommand: %S" err args)))
-                     ;; FINALLY kill the buffer
-                     (when (buffer-live-p buf)
-                       (kill-buffer buf))))))
-             (when (string-match-p "exited abnormally" event)
-               (let ((buf (process-buffer process)))
-                 (when (buffer-live-p buf)
-                   (let ((error-msg (with-current-buffer buf
-                                      (buffer-substring-no-properties (point-min) (point-max)))))
-                     (message "Mail app command failed: %s" error-msg)
-                     (when (buffer-live-p buf)
-                       (kill-buffer buf)))))))
+                   ;; Abnormal exit: log and call callback with error-prefixed output so
+                   ;; bulk runners can count it as a failure and keep the chain moving.
+                   (message "Mail-app command failed: %s\nCommand: %S" output args)
+                   (condition-case err
+                       (funcall callback (concat "error: " output))
+                     (error (message "Mail-app callback error: %S\nCommand: %S" err args)))))))
          (error (message "Mail-app sentinel CRASH: %S\nCommand: %S" sentinel-err args)))))))
 
+
+(defun mail-app--run-bulk-async (operations on-complete &optional progress-callback)
+  "Run OPERATIONS asynchronously and call ON-COMPLETE when done.
+OPERATIONS is a list of (args-list) where each args-list is passed to mail-app-cli.
+ON-COMPLETE is called with (success-count error-count total).
+PROGRESS-CALLBACK if provided is called with (completed total) for each operation."
+  (let* ((total (length operations))
+         (remaining (copy-sequence operations))
+         (success-count 0)
+         (error-count 0))
+    (if (null remaining)
+        ;; No operations - call completion immediately
+        (funcall on-complete 0 0 0)
+      ;; Process operations one at a time asynchronously
+      (letrec ((process-next
+                (lambda ()
+                  (if (null remaining)
+                      ;; All done
+                      (funcall on-complete success-count error-count total)
+                    ;; Process next operation
+                    (let ((args (pop remaining)))
+                      (apply #'mail-app--run-command-async
+                             (lambda (output)
+                               ;; Check for errors in output
+                               (if (string-match-p "error\\|Error\\|failed\\|Failed" output)
+                                   (setq error-count (1+ error-count))
+                                 (setq success-count (1+ success-count)))
+                               ;; Progress callback
+                               (when progress-callback
+                                 (funcall progress-callback (+ success-count error-count) total))
+                               ;; Process next
+                               (funcall process-next))
+                             args))))))
+        (funcall process-next)))))
 
 
 (defun mail-app--parse-accounts-output (output)

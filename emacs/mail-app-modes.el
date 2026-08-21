@@ -105,6 +105,7 @@
     (define-key map (kbd "F") 'mail-app-forward-current-message)
     (define-key map (kbd "TAB") 'mail-app-cycle-view)
     (define-key map (kbd "<backtab>") 'mail-app-cycle-view-reverse)
+    (define-key map (kbd "b") 'mail-app-jump-to-body)
     (define-key map (kbd "f") 'mail-app-flag-current-message)
     (define-key map (kbd "d") 'mail-app-delete-current-message)
     (define-key map (kbd "a") 'mail-app-archive-current-message)
