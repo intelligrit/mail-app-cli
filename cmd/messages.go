@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -21,9 +22,9 @@ var (
 	msgUnread        bool
 	msgFlaggedFilter bool
 	msgWithContent   bool
-	msgRead         bool
-	msgFlaggedSet   bool
-	msgSince        string
+	msgRead          bool
+	msgFlaggedSet    bool
+	msgSince         string
 	msgNoCache       bool
 	msgForceRefresh  bool
 )
@@ -145,131 +146,125 @@ var messagesShowCmd = &cobra.Command{
 	},
 }
 
-var messagesMarkCmd = &cobra.Command{
-	Use:   "mark [message-id]",
-	Short: "Mark message as read/unread",
-	Long:  `Mark a message as read or unread.`,
-	Args:  cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		messageID := args[0]
-		if msgAccount == "" || msgMailbox == "" {
-			return fmt.Errorf("both --account and --mailbox are required")
-		}
+// reportMutation prints a batch result and returns an error if any ID failed.
+func reportMutation(res *mail.MutationResult, verb string) error {
+	n := len(res.Succeeded)
+	if n == 1 {
+		fmt.Fprintf(os.Stderr, "Message %s\n", verb)
+	} else {
+		fmt.Fprintf(os.Stderr, "%d messages %s\n", n, verb)
+	}
+	return res.Err()
+}
 
-		client := mail.NewClient()
-		err := client.MarkMessageAsRead(msgAccount, msgMailbox, messageID, msgRead)
+func requireAccountMailbox() error {
+	if msgAccount == "" || msgMailbox == "" {
+		return fmt.Errorf("both --account and --mailbox are required")
+	}
+	return nil
+}
+
+var messagesMarkCmd = &cobra.Command{
+	Use:   "mark [message-id...]",
+	Short: "Mark messages as read/unread",
+	Long:  `Mark one or more messages as read or unread. All IDs are processed in a single Mail.app call.`,
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := requireAccountMailbox(); err != nil {
+			return err
+		}
+		res, err := mail.NewClient().MarkMessages(msgAccount, msgMailbox, args, msgRead)
 		if err != nil {
-			return fmt.Errorf("failed to mark message: %w", err)
+			return fmt.Errorf("failed to mark messages: %w", err)
 		}
 		invalidateMailboxCache(msgAccount, msgMailbox)
-
-		status := "unread"
+		status := "marked as unread"
 		if msgRead {
-			status = "read"
+			status = "marked as read"
 		}
-		fmt.Printf("Message marked as %s\n", status)
-		return nil
+		return reportMutation(res, status)
 	},
 }
 
 var messagesFlagCmd = &cobra.Command{
-	Use:   "flag [message-id]",
-	Short: "Flag or unflag a message",
-	Long:  `Set or unset the flagged status of a message.`,
-	Args:  cobra.ExactArgs(1),
+	Use:   "flag [message-id...]",
+	Short: "Flag or unflag messages",
+	Long:  `Set or unset the flagged status of one or more messages. All IDs are processed in a single Mail.app call.`,
+	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		messageID := args[0]
-		if msgAccount == "" || msgMailbox == "" {
-			return fmt.Errorf("both --account and --mailbox are required")
+		if err := requireAccountMailbox(); err != nil {
+			return err
 		}
-
-		client := mail.NewClient()
-		err := client.FlagMessage(msgAccount, msgMailbox, messageID, msgFlaggedSet)
+		res, err := mail.NewClient().FlagMessages(msgAccount, msgMailbox, args, msgFlaggedSet)
 		if err != nil {
-			return fmt.Errorf("failed to flag message: %w", err)
+			return fmt.Errorf("failed to flag messages: %w", err)
 		}
 		invalidateMailboxCache(msgAccount, msgMailbox)
-
 		status := "unflagged"
 		if msgFlaggedSet {
 			status = "flagged"
 		}
-		fmt.Printf("Message %s\n", status)
-		return nil
+		return reportMutation(res, status)
 	},
 }
 
 var messagesDeleteCmd = &cobra.Command{
-	Use:   "delete [message-id]",
-	Short: "Delete a message",
-	Long:  `Move a message to the trash.`,
-	Args:  cobra.ExactArgs(1),
+	Use:   "delete [message-id...]",
+	Short: "Delete messages",
+	Long: `Move one or more messages to the trash. All IDs are processed in a single Mail.app call.
+Deleting a message that is already in Trash removes it permanently.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		messageID := args[0]
-		if msgAccount == "" || msgMailbox == "" {
-			return fmt.Errorf("both --account and --mailbox are required")
+		if err := requireAccountMailbox(); err != nil {
+			return err
 		}
-
-		client := mail.NewClient()
-		err := client.DeleteMessage(msgAccount, msgMailbox, messageID)
+		res, err := mail.NewClient().DeleteMessages(msgAccount, msgMailbox, args)
 		if err != nil {
-			return fmt.Errorf("failed to delete message: %w", err)
+			return fmt.Errorf("failed to delete messages: %w", err)
 		}
 		invalidateMailboxCache(msgAccount, msgMailbox)
-
-		fmt.Println("Message deleted")
-		return nil
+		return reportMutation(res, "deleted")
 	},
 }
 
 var messagesArchiveCmd = &cobra.Command{
-	Use:   "archive [message-id]",
-	Short: "Archive a message",
-	Long:  `Move a message to the Archive mailbox.`,
-	Args:  cobra.ExactArgs(1),
+	Use:   "archive [message-id...]",
+	Short: "Archive messages",
+	Long: `Move one or more messages to the Archive mailbox. All IDs are processed in a single Mail.app call.
+Gmail accounts are refused: Mail.app has no safe scriptable archive for Gmail (see README).`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		messageID := args[0]
-		if msgAccount == "" || msgMailbox == "" {
-			return fmt.Errorf("both --account and --mailbox are required")
+		if err := requireAccountMailbox(); err != nil {
+			return err
 		}
-
-		client := mail.NewClient()
-		err := client.ArchiveMessage(msgAccount, msgMailbox, messageID)
+		res, err := mail.NewClient().ArchiveMessages(msgAccount, msgMailbox, args)
 		if err != nil {
-			return fmt.Errorf("failed to archive message: %w", err)
+			return fmt.Errorf("failed to archive messages: %w", err)
 		}
 		invalidateMailboxCache(msgAccount, msgMailbox)
-		// Also invalidate the archive mailbox (provider-dependent name)
 		invalidateMailboxCache(msgAccount, "Archive")
-		invalidateMailboxCache(msgAccount, "All Mail")
-
-		fmt.Println("Message archived")
-		return nil
+		return reportMutation(res, "archived")
 	},
 }
 
 var messagesMoveCmd = &cobra.Command{
-	Use:   "move [message-id] [target-mailbox]",
-	Short: "Move a message to another mailbox",
-	Long:  `Move a message to a different mailbox.`,
-	Args:  cobra.ExactArgs(2),
+	Use:   "move [message-id...] [target-mailbox]",
+	Short: "Move messages to another mailbox",
+	Long:  `Move one or more messages to a different mailbox. The last argument is the target mailbox. All IDs are processed in a single Mail.app call.`,
+	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		messageID := args[0]
-		targetMailbox := args[1]
-		if msgAccount == "" || msgMailbox == "" {
-			return fmt.Errorf("both --account and --mailbox are required")
+		if err := requireAccountMailbox(); err != nil {
+			return err
 		}
-
-		client := mail.NewClient()
-		err := client.MoveMessage(msgAccount, msgMailbox, messageID, targetMailbox)
+		ids := args[:len(args)-1]
+		targetMailbox := args[len(args)-1]
+		res, err := mail.NewClient().MoveMessages(msgAccount, msgMailbox, ids, targetMailbox)
 		if err != nil {
-			return fmt.Errorf("failed to move message: %w", err)
+			return fmt.Errorf("failed to move messages: %w", err)
 		}
 		invalidateMailboxCache(msgAccount, msgMailbox)
 		invalidateMailboxCache(msgAccount, targetMailbox)
-
-		fmt.Printf("Message moved to %s\n", targetMailbox)
-		return nil
+		return reportMutation(res, "moved to "+targetMailbox)
 	},
 }
 

@@ -1,8 +1,8 @@
 package cmd
 
 import (
-	"os"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/intelligrit/mail-app-cli/pkg/mail"

@@ -97,30 +97,30 @@ Show full message details:
 mail-app-cli messages show <message-id> -a "Gmail" -m "INBOX"
 ```
 
-Mark message as read/unread:
+Mark messages as read/unread (any number of IDs, one Mail.app round trip):
 
 ```bash
 # Mark as read
-mail-app-cli messages mark <message-id> -a "Gmail" -m "INBOX" --read
+mail-app-cli messages mark <message-id> [<message-id>...] -a "Gmail" -m "INBOX" --read
 
 # Mark as unread
 mail-app-cli messages mark <message-id> -a "Gmail" -m "INBOX" --read=false
 ```
 
-Flag/unflag a message:
+Flag/unflag messages:
 
 ```bash
-# Flag a message
-mail-app-cli messages flag <message-id> -a "Gmail" -m "INBOX" --flagged
+# Flag messages
+mail-app-cli messages flag <message-id> [<message-id>...] -a "Gmail" -m "INBOX" --flagged
 
 # Unflag a message
 mail-app-cli messages flag <message-id> -a "Gmail" -m "INBOX" --flagged=false
 ```
 
-Archive a message:
+Archive messages:
 
 ```bash
-mail-app-cli messages archive <message-id> -a "Exchange" -m "Inbox"
+mail-app-cli messages archive <message-id> [<message-id>...] -a "Exchange" -m "Inbox"
 ```
 
 > **Gmail limitation:** archiving is refused for Gmail accounts. Mail.app
@@ -130,17 +130,58 @@ mail-app-cli messages archive <message-id> -a "Exchange" -m "Inbox"
 > Gmail messages in Mail.app or Gmail itself, or use `messages delete` to
 > send them to Trash.
 
-Move a message to another mailbox:
+Move messages to another mailbox (the last argument is the target):
 
 ```bash
-mail-app-cli messages move <message-id> "Archive" -a "Gmail" -m "INBOX"
+mail-app-cli messages move <message-id> [<message-id>...] "Archive" -a "Gmail" -m "INBOX"
 ```
 
-Delete a message:
+Delete messages:
 
 ```bash
-mail-app-cli messages delete <message-id> -a "Gmail" -m "INBOX"
+mail-app-cli messages delete <message-id> [<message-id>...] -a "Gmail" -m "INBOX"
 ```
+
+Deleting a message that is already in Trash removes it permanently.
+
+All mutation commands accept multiple IDs and process them in a single
+Mail.app call. Each ID is reported individually: a missing ID does not stop
+the others, and the command exits non-zero listing the IDs that failed.
+
+> **Note:** when a message is moved (archive, move, delete) Mail.app assigns it
+> a **new ID** in the destination mailbox. Re-list the destination if you need
+> to act on it again.
+
+### Marking Whole Mailboxes as Read
+
+Mark every message in a mailbox as read in one call:
+
+```bash
+mail-app-cli mailboxes mark-read -a "Gmail" -m "Spam"
+```
+
+Or hit the provider-independent special mailboxes across all accounts. Mail.app
+resolves the names ("Trash" vs "Deleted Items", "Spam" vs "Junk Email") itself:
+
+```bash
+# Everything you never read anyway
+mail-app-cli mailboxes mark-read --trash --junk --archive
+mail-app-cli mailboxes mark-read --all            # same thing
+
+# Only some accounts (repeatable)
+mail-app-cli mailboxes mark-read --all -a "Skyward" -a "Intelligrit"
+
+# See what would change first
+mail-app-cli mailboxes mark-read --all --dry-run
+
+# Mark unread instead
+mail-app-cli mailboxes mark-read -a "Gmail" -m "INBOX" --unread
+```
+
+Output is a JSON array of `{account, mailbox, changed}` per mailbox touched.
+`--archive` matches a mailbox literally named "Archive"; Gmail's "All Mail" is
+skipped because it also holds every inbox message (pass `-m "All Mail"`
+explicitly if you really want that).
 
 ### Sending Email
 
@@ -217,61 +258,61 @@ mail-app-cli accounts list | jq
 #### Filter accounts by email domain
 
 ```bash
-mail-app-cli accounts list | jq '.[] | select(.emailAddress | endswith("@gmail.com"))'
+mail-app-cli accounts list | jq '.[] | select(.EmailAddress | endswith("@gmail.com"))'
 ```
 
 #### Get only enabled accounts
 
 ```bash
-mail-app-cli accounts list | jq '.[] | select(.enabled==true) | .name'
+mail-app-cli accounts list | jq '.[] | select(.Enabled==true) | .Name'
 ```
 
 #### Count unread messages across all mailboxes
 
 ```bash
-mail-app-cli mailboxes list | jq '[.[].unreadCount] | add'
+mail-app-cli mailboxes list | jq '[.[].UnreadCount] | add'
 ```
 
 #### Find mailboxes with unread messages
 
 ```bash
-mail-app-cli mailboxes list | jq '.[] | select(.unreadCount > 0) | {account, name, unread: .unreadCount}'
+mail-app-cli mailboxes list | jq '.[] | select(.UnreadCount > 0) | {account: .Account, name: .Name, unread: .UnreadCount}'
 ```
 
 #### Get just the subject lines from messages
 
 ```bash
-mail-app-cli messages list -a "Gmail" -m "INBOX" | jq '.[].subject'
+mail-app-cli messages list -a "Gmail" -m "INBOX" | jq '.[].Subject'
 ```
 
 #### Filter unread messages from specific sender
 
 ```bash
-mail-app-cli messages list -a "Gmail" -m "INBOX" | jq '.[] | select(.read==false and (.sender | contains("boss@company.com")))'
+mail-app-cli messages list -a "Gmail" -m "INBOX" | jq '.[] | select(.Read==false and (.Sender | contains("boss@company.com")))'
 ```
 
 #### Search and format results as CSV
 
 ```bash
-mail-app-cli search "important" | jq -r '.[] | [.account, .mailbox, .subject, .sender] | @csv'
+mail-app-cli search "important" | jq -r '.[] | [.Account, .Mailbox, .Subject, .Sender] | @csv'
 ```
 
 #### Count messages by account
 
 ```bash
-mail-app-cli search "project" | jq 'group_by(.account) | map({account: .[0].account, count: length})'
+mail-app-cli search "project" | jq 'group_by(.Account) | map({account: .[0].Account, count: length})'
 ```
 
 #### Get attachment names from a message
 
 ```bash
-mail-app-cli attachments list <message-id> -a "Gmail" -m "INBOX" | jq '.[].name'
+mail-app-cli attachments list <message-id> -a "Gmail" -m "INBOX" | jq '.[].Name'
 ```
 
 #### Find large attachments (>1MB)
 
 ```bash
-mail-app-cli attachments list <message-id> -a "Gmail" -m "INBOX" | jq '.[] | select(.fileSize > 1048576)'
+mail-app-cli attachments list <message-id> -a "Gmail" -m "INBOX" | jq '.[] | select(.FileSize > 1048576)'
 ```
 
 ### Scripting Examples
@@ -290,9 +331,8 @@ fi
 
 ```bash
 #!/bin/bash
-mail-app-cli messages list -a "Exchange" -m "Inbox" | jq -r '.[] | select(.read==true) | .id' | while read -r msg_id; do
-  mail-app-cli messages archive "$msg_id" -a "Exchange" -m "Inbox"
-done
+mail-app-cli messages list -a "Exchange" -m "Inbox" | jq -r '.[] | select(.Read==true) | .ID' \
+  | xargs mail-app-cli messages archive -a "Exchange" -m "Inbox"
 ```
 
 #### Daily unread summary
@@ -301,7 +341,7 @@ done
 #!/bin/bash
 echo "Today's Unread Email Summary"
 echo "============================"
-mail-app-cli mailboxes list | jq -r '.[] | select(.unreadCount > 0) | "\(.account)/\(.name): \(.unreadCount) unread"'
+mail-app-cli mailboxes list | jq -r '.[] | select(.UnreadCount > 0) | "\(.Account)/\(.Name): \(.UnreadCount) unread"'
 ```
 
 #### Save all attachments from a sender
@@ -313,9 +353,9 @@ ACCOUNT="Gmail"
 MAILBOX="INBOX"
 
 # Find all messages from sender
-mail-app-cli messages list -a "$ACCOUNT" -m "$MAILBOX" | jq -r ".[] | select(.sender | contains(\"$SENDER\")) | .id" | while read -r msg_id; do
+mail-app-cli messages list -a "$ACCOUNT" -m "$MAILBOX" | jq -r ".[] | select(.Sender | contains(\"$SENDER\")) | .ID" | while read -r msg_id; do
   # Get attachments for each message
-  mail-app-cli attachments list "$msg_id" -a "$ACCOUNT" -m "$MAILBOX" | jq -r '.[].name' | while read -r att_name; do
+  mail-app-cli attachments list "$msg_id" -a "$ACCOUNT" -m "$MAILBOX" | jq -r '.[].Name' | while read -r att_name; do
     echo "Saving: $att_name from message $msg_id"
     mail-app-cli attachments save "$msg_id" "$att_name" -a "$ACCOUNT" -m "$MAILBOX" -o "~/Downloads/$att_name"
   done
@@ -390,7 +430,6 @@ Future enhancements:
 - Signatures management
 - VIP contacts
 - Export/import functionality
-- Batch operations
 - IMAP folder synchronization
 - Message threading support
 - Draft management

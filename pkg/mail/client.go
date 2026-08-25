@@ -132,6 +132,18 @@ function resolveMailbox(acc, name) {
 	}
 	return walk(acc.mailboxes());
 }
+// resolveMessage returns a message specifier by Mail's global message id,
+// or null if no such message exists. byId() is a direct object specifier
+// (~10ms) whereas mbox.messages.id() enumerates the whole mailbox (seconds
+// on large boxes). Note that byId is not scoped to mbox: message ids are
+// unique across the Mail database, so the result is always the message the
+// caller identified, even if Gmail reports it under a different label.
+function resolveMessage(mbox, id) {
+	const n = Number(id);
+	if (!isFinite(n)) return null;
+	const m = mbox.messages.byId(n);
+	try { m.id(); return m; } catch (e) { return null; }
+}
 `
 
 func (c *Client) GetAccounts() ([]Account, error) {
@@ -283,108 +295,29 @@ func (c *Client) SearchMessages(query string, limit int) ([]Message, error) {
 
 // MarkMessageAsRead marks a message as read
 func (c *Client) MarkMessageAsRead(accountName, mailboxName, messageID string, read bool) error {
-	readStatus := "true"
-	if !read {
-		readStatus = "false"
-	}
-
-	script := fmt.Sprintf(`
-const mail = Application('Mail');
-`+jsResolveMailbox+`
-try {
-	const acc = mail.accounts.byName('%s');
-	const mbox = resolveMailbox(acc, '%s');
-	if (!mbox) throw 'Mailbox not found';
-	const allIds = mbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx < 0) {
-		'Error: Message not found';
-	} else {
-		mbox.messages.at(targetIdx).readStatus = %s;
-		'Success';
-	}
-} catch (e) {
-	'Error: ' + e;
-}
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID), readStatus)
-
-	output, err := c.runJXA(script)
+	res, err := c.MarkMessages(accountName, mailboxName, []string{messageID}, read)
 	if err != nil {
 		return err
 	}
-	if strings.Contains(output, "Error") {
-		return fmt.Errorf(output)
-	}
-	return nil
+	return res.Err()
 }
 
 // FlagMessage sets or unsets the flagged status of a message
 func (c *Client) FlagMessage(accountName, mailboxName, messageID string, flagged bool) error {
-	flagStatus := "true"
-	if !flagged {
-		flagStatus = "false"
-	}
-
-	script := fmt.Sprintf(`
-const mail = Application('Mail');
-`+jsResolveMailbox+`
-try {
-	const acc = mail.accounts.byName('%s');
-	const mbox = resolveMailbox(acc, '%s');
-	if (!mbox) throw 'Mailbox not found';
-	const allIds = mbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx < 0) {
-		'Error: Message not found';
-	} else {
-		mbox.messages.at(targetIdx).flaggedStatus = %s;
-		'Success';
-	}
-} catch (e) {
-	'Error: ' + e;
-}
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID), flagStatus)
-
-	output, err := c.runJXA(script)
+	res, err := c.FlagMessages(accountName, mailboxName, []string{messageID}, flagged)
 	if err != nil {
 		return err
 	}
-	if strings.Contains(output, "Error") {
-		return fmt.Errorf(output)
-	}
-	return nil
+	return res.Err()
 }
 
 // DeleteMessage moves a message to trash
 func (c *Client) DeleteMessage(accountName, mailboxName, messageID string) error {
-	script := fmt.Sprintf(`
-const mail = Application('Mail');
-`+jsResolveMailbox+`
-try {
-	const acc = mail.accounts.byName('%s');
-	const mbox = resolveMailbox(acc, '%s');
-	if (!mbox) throw 'Mailbox not found';
-	const allIds = mbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx < 0) {
-		'Error: Message not found';
-	} else {
-		mbox.messages.at(targetIdx).delete();
-		'Success';
-	}
-} catch (e) {
-	'Error: ' + e;
-}
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
-
-	output, err := c.runJXA(script)
+	res, err := c.DeleteMessages(accountName, mailboxName, []string{messageID})
 	if err != nil {
 		return err
 	}
-	if strings.Contains(output, "Error") {
-		return fmt.Errorf(output)
-	}
-	return nil
+	return res.Err()
 }
 
 // SendMessage sends a new email message
@@ -786,10 +719,9 @@ try {
 	const acc = mail.accounts.byName('%s');
 	const mbox = resolveMailbox(acc, '%s');
 	if (!mbox) throw 'Mailbox not found';
-	const allIds = mbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx >= 0) {
-		const msg = mbox.messages.at(targetIdx);
+	const target = resolveMessage(mbox, '%s');
+	if (target) {
+		const msg = target;
 		const toRecipients = [];
 		const toRecs = msg.toRecipients();
 		for (let t = 0; t < toRecs.length; t++) {
@@ -859,85 +791,26 @@ JSON.stringify(result);
 //   - message.deletedStatus is read-only.
 //   - Driving Mail's own Archive command works reliably but requires UI
 //     automation that activates Mail and steals focus.
+//
 // Archiving Gmail from the CLI therefore needs the Gmail API, not Mail.app.
 //
 // Other providers (Exchange, Fastmail, ...) do real moves, so a plain move
 // to their "Archive" mailbox works.
 func (c *Client) ArchiveMessage(accountName, mailboxName, messageID string) error {
-	script := fmt.Sprintf(`
-const mail = Application('Mail');
-`+jsResolveMailbox+`
-try {
-	const acc = mail.accounts.byName('%s');
-	const mbox = resolveMailbox(acc, '%s');
-	if (!mbox) throw 'Source mailbox not found';
-	const allIds = mbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx < 0) {
-		'Error: Message not found';
-	} else if (resolveMailbox(acc, 'All Mail')) {
-		'Error: Gmail accounts cannot be archived safely via Mail.app scripting. ' +
-		'Archive it in Mail.app or Gmail directly, or use "messages delete" to move it to Trash.';
-	} else {
-		const archiveBox = resolveMailbox(acc, 'Archive');
-		if (archiveBox) {
-			// Use the move command; assigning the mailbox property is
-			// silently ignored for Gmail mailboxes.
-			mail.move(mbox.messages.at(targetIdx), { to: archiveBox });
-			'Success';
-		} else {
-			'Error: Archive mailbox not found';
-		}
-	}
-} catch (e) {
-	'Error: ' + e;
-}
-`, escapeJSString(accountName), escapeJSString(mailboxName), escapeJSString(messageID))
-
-	output, err := c.runJXA(script)
+	res, err := c.ArchiveMessages(accountName, mailboxName, []string{messageID})
 	if err != nil {
 		return err
 	}
-	if strings.Contains(output, "Error") {
-		return fmt.Errorf(output)
-	}
-	return nil
+	return res.Err()
 }
 
 // MoveMessage moves a message to a different mailbox
 func (c *Client) MoveMessage(accountName, sourceMailbox, messageID, targetMailbox string) error {
-	script := fmt.Sprintf(`
-const mail = Application('Mail');
-`+jsResolveMailbox+`
-try {
-	const acc = mail.accounts.byName('%s');
-	const sourceMbox = resolveMailbox(acc, '%s');
-	if (!sourceMbox) throw 'Source mailbox not found';
-	const destMbox = resolveMailbox(acc, '%s');
-	if (!destMbox) throw 'Destination mailbox not found';
-	const allIds = sourceMbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx < 0) {
-		'Error: Message not found';
-	} else {
-		// Use the move command; assigning the mailbox property is
-		// silently ignored for Gmail mailboxes.
-		mail.move(sourceMbox.messages.at(targetIdx), { to: destMbox });
-		'Success';
-	}
-} catch (e) {
-	'Error: ' + e;
-}
-`, escapeJSString(accountName), escapeJSString(sourceMailbox), escapeJSString(targetMailbox), escapeJSString(messageID))
-
-	output, err := c.runJXA(script)
+	res, err := c.MoveMessages(accountName, sourceMailbox, []string{messageID}, targetMailbox)
 	if err != nil {
 		return err
 	}
-	if strings.Contains(output, "Error") {
-		return fmt.Errorf(output)
-	}
-	return nil
+	return res.Err()
 }
 
 // GetAttachmentsJSON retrieves attachments from a message
@@ -950,10 +823,9 @@ try {
 	const acc = mail.accounts.byName('%s');
 	const mbox = resolveMailbox(acc, '%s');
 	if (!mbox) throw 'Mailbox not found';
-	const allIds = mbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx >= 0) {
-		const attachments = mbox.messages.at(targetIdx).mailAttachments();
+	const target = resolveMessage(mbox, '%s');
+	if (target) {
+		const attachments = target.mailAttachments();
 		for (let a = 0; a < attachments.length; a++) {
 			const att = attachments[a];
 			let mimeType = 'unknown';
@@ -1000,12 +872,11 @@ try {
 	const acc = mail.accounts.byName('%s');
 	const mbox = resolveMailbox(acc, '%s');
 	if (!mbox) throw 'Mailbox not found';
-	const allIds = mbox.messages.id();
-	const targetIdx = allIds.findIndex(id => String(id) === '%s');
-	if (targetIdx < 0) {
+	const target = resolveMessage(mbox, '%s');
+	if (!target) {
 		'Error: Message not found';
 	} else {
-		const attachments = mbox.messages.at(targetIdx).mailAttachments();
+		const attachments = target.mailAttachments();
 		let found = false;
 		for (let a = 0; a < attachments.length; a++) {
 			if (attachments[a].name() === '%s') {
@@ -1187,14 +1058,14 @@ JSON.stringify(result);
 
 // GetMessagesFromMultipleMailboxes loads messages from multiple mailboxes concurrently
 func (c *Client) GetMessagesFromMultipleMailboxes(requests []struct {
-	AccountName  string
-	MailboxName  string
-	Limit        int
-	Offset       int
-	UnreadOnly   bool
-	FlaggedOnly  bool
-	WithContent  bool
-	Since        string
+	AccountName string
+	MailboxName string
+	Limit       int
+	Offset      int
+	UnreadOnly  bool
+	FlaggedOnly bool
+	WithContent bool
+	Since       string
 }) ([]Message, error) {
 	if len(requests) == 0 {
 		return []Message{}, nil
@@ -1216,14 +1087,14 @@ func (c *Client) GetMessagesFromMultipleMailboxes(requests []struct {
 	// Launch goroutine for each mailbox
 	for _, req := range requests {
 		go func(r struct {
-			AccountName  string
-			MailboxName  string
-			Limit        int
-			Offset       int
-			UnreadOnly   bool
-			FlaggedOnly  bool
-			WithContent  bool
-			Since        string
+			AccountName string
+			MailboxName string
+			Limit       int
+			Offset      int
+			UnreadOnly  bool
+			FlaggedOnly bool
+			WithContent bool
+			Since       string
 		}) {
 			messages, err := c.GetMessagesJSON(r.AccountName, r.MailboxName, r.Limit, r.Offset, r.UnreadOnly, r.FlaggedOnly, r.WithContent, r.Since)
 			results <- result{messages: messages, err: err}
@@ -1252,9 +1123,9 @@ func (c *Client) GetMessagesFromMultipleMailboxes(requests []struct {
 
 // GetMultipleMessageDetails loads full details for multiple messages concurrently
 func (c *Client) GetMultipleMessageDetails(requests []struct {
-	AccountName  string
-	MailboxName  string
-	MessageID    string
+	AccountName string
+	MailboxName string
+	MessageID   string
 }) ([]*Message, error) {
 	if len(requests) == 0 {
 		return []*Message{}, nil
@@ -1281,9 +1152,9 @@ func (c *Client) GetMultipleMessageDetails(requests []struct {
 	// Launch goroutine for each message
 	for i, req := range requests {
 		go func(idx int, r struct {
-			AccountName  string
-			MailboxName  string
-			MessageID    string
+			AccountName string
+			MailboxName string
+			MessageID   string
 		}) {
 			message, err := c.GetMessageDetailsJSON(r.AccountName, r.MailboxName, r.MessageID)
 			results <- result{message: message, err: err, index: idx}
@@ -1589,11 +1460,14 @@ func (c *Client) getInboxBasedUnified(mailboxType string, limit, offset int, wit
 // junkMailboxes) via a single JXA call.  No per-message filtering is applied
 // since these views don't need unread/flagged filtering.
 func (c *Client) getSpecialMailboxUnified(mailboxType string, limit, offset int, withContent bool) ([]Message, error) {
+	// Mail.app exposes unified special mailboxes as singular application
+	// properties (trashMailbox, junkMailbox, ...); their .mailboxes() are the
+	// per-account boxes. The plural forms do not exist in JXA.
 	accessor := map[string]string{
-		"sent":   "sentMailboxes",
-		"drafts": "draftMailboxes",
-		"trash":  "trashMailboxes",
-		"junk":   "junkMailboxes",
+		"sent":   "sentMailbox",
+		"drafts": "draftsMailbox",
+		"trash":  "trashMailbox",
+		"junk":   "junkMailbox",
 	}[mailboxType]
 
 	perLimit := limit + offset
@@ -1609,7 +1483,7 @@ func (c *Client) getSpecialMailboxUnified(mailboxType string, limit, offset int,
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 const result = [];
-const mailboxes = mail.%s();
+const mailboxes = mail.%s().mailboxes();
 
 for (let m = 0; m < mailboxes.length; m++) {
 	const mbox = mailboxes[m];
@@ -1681,10 +1555,10 @@ func sortAndSlice(messages []Message, offset, limit int) []Message {
 }
 
 func (c *Client) BulkMoveMessages(requests []struct {
-	AccountName    string
-	SourceMailbox  string
-	MessageID      string
-	TargetMailbox  string
+	AccountName   string
+	SourceMailbox string
+	MessageID     string
+	TargetMailbox string
 }) error {
 	if len(requests) == 0 {
 		return nil
@@ -1702,10 +1576,10 @@ func (c *Client) BulkMoveMessages(requests []struct {
 	// Launch goroutine for each move operation
 	for _, req := range requests {
 		go func(r struct {
-			AccountName    string
-			SourceMailbox  string
-			MessageID      string
-			TargetMailbox  string
+			AccountName   string
+			SourceMailbox string
+			MessageID     string
+			TargetMailbox string
 		}) {
 			errors <- c.MoveMessage(r.AccountName, r.SourceMailbox, r.MessageID, r.TargetMailbox)
 		}(req)
@@ -1724,4 +1598,253 @@ func (c *Client) BulkMoveMessages(requests []struct {
 	}
 
 	return nil
+}
+
+// MutationResult reports the per-message outcome of a batch mutation.
+type MutationResult struct {
+	Succeeded []string          `json:"succeeded"`
+	Missing   []string          `json:"missing"`
+	Failed    map[string]string `json:"failed,omitempty"`
+}
+
+// Err returns a non-nil error if any message was missing or failed.
+func (r *MutationResult) Err() error {
+	if len(r.Missing) == 0 && len(r.Failed) == 0 {
+		return nil
+	}
+	var parts []string
+	if len(r.Missing) > 0 {
+		parts = append(parts, fmt.Sprintf("not found: %s", strings.Join(r.Missing, ", ")))
+	}
+	for id, msg := range r.Failed {
+		parts = append(parts, fmt.Sprintf("%s: %s", id, msg))
+	}
+	return fmt.Errorf("%d of %d messages failed (%s)",
+		len(r.Missing)+len(r.Failed), len(r.Succeeded)+len(r.Missing)+len(r.Failed), strings.Join(parts, "; "))
+}
+
+// mutateMessages resolves a mailbox once, looks up every requested message ID
+// in a single enumeration, and runs jsAction on each match. jsAction is a JXA
+// snippet with `msg` (the message specifier), `acc`, `mbox` and `mail` in
+// scope. Each message is resolved with byId (no mailbox enumeration) and all
+// IDs share one osascript process, so cost is ~10ms per message plus one
+// process launch.
+func (c *Client) mutateMessages(accountName, mailboxName string, messageIDs []string, jsPrelude, jsAction string) (*MutationResult, error) {
+	res := &MutationResult{Failed: map[string]string{}}
+	if len(messageIDs) == 0 {
+		return res, nil
+	}
+	idsJSON, _ := json.Marshal(messageIDs)
+
+	script := fmt.Sprintf(`
+const mail = Application('Mail');
+`+jsResolveMailbox+`
+const result = { succeeded: [], missing: [], failed: {} };
+try {
+	const acc = mail.accounts.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
+	%s
+	const wanted = %s;
+	for (const id of wanted) {
+		const msg = resolveMessage(mbox, id);
+		if (!msg) { result.missing.push(id); continue; }
+		const t = { id: id };
+		try {
+			%s
+			result.succeeded.push(t.id);
+		} catch (e) {
+			result.failed[t.id] = String(e);
+		}
+	}
+	JSON.stringify(result);
+} catch (e) {
+	JSON.stringify({ error: String(e) });
+}
+`, escapeJSString(accountName), escapeJSString(mailboxName), jsPrelude, string(idsJSON), jsAction)
+
+	output, err := c.runJXA(script)
+	if err != nil {
+		return nil, err
+	}
+	var raw struct {
+		Error     string            `json:"error"`
+		Succeeded []string          `json:"succeeded"`
+		Missing   []string          `json:"missing"`
+		Failed    map[string]string `json:"failed"`
+	}
+	if err := json.Unmarshal([]byte(output), &raw); err != nil {
+		return nil, fmt.Errorf("unexpected output: %s", output)
+	}
+	if raw.Error != "" {
+		return nil, fmt.Errorf("%s", raw.Error)
+	}
+	res.Succeeded = raw.Succeeded
+	res.Missing = raw.Missing
+	if raw.Failed != nil {
+		res.Failed = raw.Failed
+	}
+	return res, nil
+}
+
+// MarkMessages marks several messages read/unread in one Mail.app round trip.
+func (c *Client) MarkMessages(accountName, mailboxName string, messageIDs []string, read bool) (*MutationResult, error) {
+	return c.mutateMessages(accountName, mailboxName, messageIDs, "", fmt.Sprintf("msg.readStatus = %t;", read))
+}
+
+// FlagMessages flags/unflags several messages in one Mail.app round trip.
+func (c *Client) FlagMessages(accountName, mailboxName string, messageIDs []string, flagged bool) (*MutationResult, error) {
+	return c.mutateMessages(accountName, mailboxName, messageIDs, "", fmt.Sprintf("msg.flaggedStatus = %t;", flagged))
+}
+
+// DeleteMessages moves several messages to Trash in one Mail.app round trip.
+// Messages already in Trash are deleted permanently by Mail.app.
+func (c *Client) DeleteMessages(accountName, mailboxName string, messageIDs []string) (*MutationResult, error) {
+	return c.mutateMessages(accountName, mailboxName, messageIDs, "", "msg.delete();")
+}
+
+// MoveMessages moves several messages to targetMailbox in one round trip.
+func (c *Client) MoveMessages(accountName, sourceMailbox string, messageIDs []string, targetMailbox string) (*MutationResult, error) {
+	prelude := fmt.Sprintf(`const destMbox = resolveMailbox(acc, '%s');
+	if (!destMbox) throw 'Destination mailbox not found';`, escapeJSString(targetMailbox))
+	return c.mutateMessages(accountName, sourceMailbox, messageIDs, prelude, "mail.move(msg, { to: destMbox });")
+}
+
+// ArchiveMessages archives several messages in one round trip. See
+// ArchiveMessage for why Gmail accounts are refused.
+func (c *Client) ArchiveMessages(accountName, mailboxName string, messageIDs []string) (*MutationResult, error) {
+	prelude := `if (resolveMailbox(acc, 'All Mail')) throw 'Gmail accounts cannot be archived safely via Mail.app scripting. ' +
+		'Archive it in Mail.app or Gmail directly, or use "messages delete" to move it to Trash.';
+	const destMbox = resolveMailbox(acc, 'Archive');
+	if (!destMbox) throw 'Archive mailbox not found';`
+	return c.mutateMessages(accountName, mailboxName, messageIDs, prelude, "mail.move(msg, { to: destMbox });")
+}
+
+// MailboxMarkResult reports one mailbox touched by a mark-read operation.
+type MailboxMarkResult struct {
+	Account string `json:"account"`
+	Mailbox string `json:"mailbox"`
+	Changed int    `json:"changed"`
+	Error   string `json:"error,omitempty"`
+}
+
+// jsMarkMailbox marks every message in `mb` whose readStatus != read and
+// returns the count. Bulk property assignment on a whose() specifier is not
+// supported by Mail.app, so this loops over the filtered result.
+const jsMarkMailbox = `
+function markMailbox(mb, read, dryRun) {
+	// unreadCount is a cheap property; skip the full whose() scan when
+	// there is nothing to do (only valid when marking read).
+	if (read) { try { if (mb.unreadCount() === 0) return 0; } catch (e) {} }
+	const pending = mb.messages.whose({ readStatus: !read })();
+	if (!dryRun) {
+		for (let i = 0; i < pending.length; i++) pending[i].readStatus = read;
+	}
+	return pending.length;
+}
+`
+
+// MarkMailboxRead marks all messages in one mailbox read (or unread) and
+// returns the number of messages changed. With dryRun it only counts.
+func (c *Client) MarkMailboxRead(accountName, mailboxName string, read, dryRun bool) (int, error) {
+	script := fmt.Sprintf(`
+const mail = Application('Mail');
+`+jsResolveMailbox+jsMarkMailbox+`
+try {
+	const acc = mail.accounts.byName('%s');
+	const mbox = resolveMailbox(acc, '%s');
+	if (!mbox) throw 'Mailbox not found';
+	JSON.stringify({ changed: markMailbox(mbox, %t, %t) });
+} catch (e) {
+	JSON.stringify({ error: String(e) });
+}
+`, escapeJSString(accountName), escapeJSString(mailboxName), read, dryRun)
+
+	output, err := c.runJXA(script)
+	if err != nil {
+		return 0, err
+	}
+	var raw struct {
+		Error   string `json:"error"`
+		Changed int    `json:"changed"`
+	}
+	if err := json.Unmarshal([]byte(output), &raw); err != nil {
+		return 0, fmt.Errorf("unexpected output: %s", output)
+	}
+	if raw.Error != "" {
+		return 0, fmt.Errorf("%s", raw.Error)
+	}
+	return raw.Changed, nil
+}
+
+// MarkSpecialMailboxesRead marks every per-account mailbox of the given kinds
+// read (or unread) in a single JXA call. kinds may contain "trash", "junk"
+// and "archive". Trash and junk resolve through Mail.app's unified
+// trashMailbox/junkMailbox properties, so provider naming (Trash vs
+// "Deleted Items", Spam vs "Junk Email") is handled by Mail itself. Archive
+// resolves a mailbox literally named "Archive" in each account's tree;
+// Gmail's "All Mail" is deliberately not treated as archive because it also
+// contains every inbox message. accounts, if non-empty, restricts to those
+// account names.
+func (c *Client) MarkSpecialMailboxesRead(kinds []string, accounts []string, read, dryRun bool) ([]MailboxMarkResult, error) {
+	kindsJSON, _ := json.Marshal(kinds)
+	if accounts == nil {
+		accounts = []string{}
+	}
+	accountsJSON, _ := json.Marshal(accounts)
+
+	script := fmt.Sprintf(`
+const mail = Application('Mail');
+`+jsResolveMailbox+jsMarkMailbox+`
+const kinds = %s;
+const onlyAccounts = %s;
+const read = %t;
+const dryRun = %t;
+const results = [];
+function wanted(accName) {
+	return onlyAccounts.length === 0 || onlyAccounts.indexOf(accName) >= 0;
+}
+function handle(accName, mb) {
+	const r = { account: accName, mailbox: '', changed: 0 };
+	try {
+		r.mailbox = mb.name();
+		r.changed = markMailbox(mb, read, dryRun);
+	} catch (e) {
+		r.error = String(e);
+	}
+	results.push(r);
+}
+for (const kind of kinds) {
+	if (kind === 'trash' || kind === 'junk') {
+		const subs = mail[kind + 'Mailbox']().mailboxes();
+		for (let i = 0; i < subs.length; i++) {
+			let accName = '';
+			try { accName = subs[i].account().name(); } catch (e) { continue; }
+			if (wanted(accName)) handle(accName, subs[i]);
+		}
+	} else if (kind === 'archive') {
+		const accs = mail.accounts();
+		for (let i = 0; i < accs.length; i++) {
+			const accName = accs[i].name();
+			if (!wanted(accName)) continue;
+			let mb = null;
+			try { mb = resolveMailbox(accs[i], 'Archive'); } catch (e) {}
+			if (mb) handle(accName, mb);
+		}
+	} else {
+		results.push({ account: '', mailbox: kind, changed: 0, error: 'unknown mailbox kind' });
+	}
+}
+JSON.stringify(results);
+`, string(kindsJSON), string(accountsJSON), read, dryRun)
+
+	output, err := c.runJXA(script)
+	if err != nil {
+		return nil, err
+	}
+	var results []MailboxMarkResult
+	if err := json.Unmarshal([]byte(output), &results); err != nil {
+		return nil, fmt.Errorf("unexpected output: %s", output)
+	}
+	return results, nil
 }

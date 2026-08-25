@@ -8,8 +8,9 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "mail-app-cli",
-	Short: "Mail.app CLI - Command line interface for macOS Mail.app",
+	SilenceUsage: true,
+	Use:          "mail-app-cli",
+	Short:        "Mail.app CLI - Command line interface for macOS Mail.app",
 	Long: `A command line tool for interacting with macOS Mail.app.
 Manage accounts, mailboxes, messages, and more from your terminal.`,
 	Version: "1.0.0",
