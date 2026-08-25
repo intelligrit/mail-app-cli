@@ -64,6 +64,12 @@ List mailboxes for a specific account:
 mail-app-cli mailboxes list --account "Gmail"
 ```
 
+Include per-mailbox message totals (`TotalCount`; slower, enumerates each mailbox):
+
+```bash
+mail-app-cli mailboxes list --counts
+```
+
 ### Messages
 
 List messages in a mailbox:
@@ -90,6 +96,10 @@ mail-app-cli messages list -a "Gmail" -m "INBOX" --since "2025-12-14 09:00:00"
 # Combine filters
 mail-app-cli messages list -a "Gmail" -m "INBOX" --unread --since "2025-12-01" --limit 10
 ```
+
+> **`--with-content` caution:** fetching bodies can block Mail.app's entire
+> scripting interface if a body is not cached locally (see PERFORMANCE.md).
+> Use it on small, recently synced mailboxes, not from unattended jobs.
 
 Show full message details:
 

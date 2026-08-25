@@ -15,6 +15,7 @@ var (
 	mailboxAccount      string
 	mailboxNoCache      bool
 	mailboxForceRefresh bool
+	mailboxWithCounts   bool
 
 	markMailbox  string
 	markTrash    bool
@@ -44,6 +45,9 @@ var mailboxesListCmd = &cobra.Command{
 		if mailboxAccount != "" {
 			cacheKey = fmt.Sprintf("mailboxes-%s", mailboxAccount)
 		}
+		if mailboxWithCounts {
+			cacheKey += "-counts"
+		}
 
 		// Try to get from cache if not disabled
 		if !mailboxNoCache && !mailboxForceRefresh {
@@ -63,7 +67,7 @@ var mailboxesListCmd = &cobra.Command{
 
 		// Get from Mail.app
 		client := mail.NewClient()
-		mailboxes, err := client.GetMailboxesJSON(mailboxAccount)
+		mailboxes, err := client.GetMailboxesJSON(mailboxAccount, mailboxWithCounts)
 		if err != nil {
 			return fmt.Errorf("failed to get mailboxes: %w", err)
 		}
@@ -197,4 +201,5 @@ func init() {
 	mailboxesListCmd.Flags().StringVarP(&mailboxAccount, "account", "a", "", "Filter by account name")
 	mailboxesListCmd.Flags().BoolVar(&mailboxNoCache, "no-cache", false, "Bypass cache and fetch fresh data")
 	mailboxesListCmd.Flags().BoolVar(&mailboxForceRefresh, "force-refresh", false, "Force refresh cache with fresh data")
+	mailboxesListCmd.Flags().BoolVar(&mailboxWithCounts, "counts", false, "Include TotalCount per mailbox (slower: enumerates every mailbox)")
 }

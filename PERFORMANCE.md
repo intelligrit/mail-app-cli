@@ -1,86 +1,63 @@
 # Performance Characteristics
 
-## Mail.app API Limitations
+## The cost model (measured against Mail.app on macOS 26)
 
-### Message Loading Performance
+Every property read on a JXA object specifier is one Apple event round trip,
+and Mail.app answers them serially. Measured costs:
 
-When loading messages from a mailbox, performance is **directly proportional to the total number of messages in that mailbox**, even when requesting only a few messages or a single specific message.
+| Operation | Cost |
+|-----------|------|
+| Launch `osascript` + connect to Mail | ~100 ms |
+| One property read on one message (`msg.subject()`) | ~10 ms |
+| Bulk property read over a mailbox (`mbox.messages.subject()`) | ~35 µs / message |
+| `mbox.messages.length` | ~10 ms (small) – 200 ms (21k messages) |
+| `mbox.messages()` (materialize all specifiers) | ~25 ms (small) – 700 ms (21k) |
+| `mbox.messages.id()` (bulk ids) | ~400 ms on 21k messages |
+| `mbox.messages.byId(n)` | direct specifier, effectively free |
+| `mbox.messages.at(i)` | **re-enumerates the mailbox on every access** — never use in a loop |
+| `mbox.messages.whose({...})` | ~0.8–1.5 s on 21k messages; bulk property reads on the result are pathologically slow (15 s for 16 messages) |
+| `msg.content()` / `msg.properties()` | may block Mail.app's *entire* scripting interface until a body download completes — see below |
 
-**Test Results:**
+## How the CLI uses this
 
-| Operation | Mailbox | Total Messages | Load Time |
-|-----------|---------|----------------|-----------|
-| List 5 messages | INBOX (empty) | 0 | 0.4s |
-| List 5 messages | INBOX (small) | 19 | 0.4s |
-| List 5 messages | All Mail (large) | 59,707 | 2.4-3.6s |
-| Get 1 message by ID | INBOX (small) | 19 | 0.4s |
-| Get 1 message by ID | All Mail (large) | 59,707 | 2.5-3.3s |
+- **Message lookup by ID** uses `byId()`. IDs are unique across the whole Mail
+  database, so no enumeration is needed; `messages show/mark/flag/delete/
+  archive/move` and attachment commands run in ~0.3 s regardless of mailbox size.
+- **Batch mutations** (`messages mark id1 id2 ...`) run in one `osascript`
+  process: cost is one launch plus ~10 ms per message.
+- **`messages list`** is hybrid. Filters (`--unread`, `--flagged`, `--since`)
+  always use one bulk read per property. Then:
+  - if the mailbox is small relative to the page (`total <= max(2000, page*300)`)
+    every field is bulk-read — a 40-message INBOX lists in ~0.2 s;
+  - otherwise only the ids are bulk-read and the page's messages are resolved
+    with `byId()` and read individually — a 21k-message "All Mail" lists in ~2.5 s.
+- **`mailboxes list`** bulk-reads names and unread counts. `TotalCount` is only
+  filled with `--counts` because it needs a `messages.length` per mailbox
+  (~3 s across 80 mailboxes vs ~0.7 s without).
+- **`mailboxes mark-read`** uses `whose({readStatus: false})` and loops over the
+  result; bulk assignment on a `whose()` specifier is not supported. It skips
+  mailboxes whose `unreadCount` is already 0.
+- Special mailboxes come from Mail's unified `trashMailbox`/`junkMailbox`/...
+  properties (`.mailboxes()` gives the per-account boxes), so provider naming
+  never matters.
 
-### Why This Happens
+## `--with-content` can hang Mail.app
 
-Mail.app's AppleScript/JXA bridge has a fundamental limitation:
+`msg.content()` (and `msg.properties()`, which includes it) makes Mail's main
+thread wait synchronously on a MailCore worker in
+`-[MCMessageBody attributedStringBlockingRemoteContent:...]`. If the body is
+not cached locally and the fetch stalls, **all** AppleScript/JXA calls from
+every process time out until Mail.app is restarted — the client going away does
+not unblock it. Observed repeatedly on Gmail spam / "All Mail" messages right
+after a Mail restart.
 
-When you call `mailbox.messages()`, Mail.app **must enumerate ALL messages** in the mailbox before returning, even if you only need a few. The API does not support:
+Mitigations: only request content for small, recently synced mailboxes; never
+call `--with-content` from unattended jobs against large or junk mailboxes; and
+if `osascript -e "Application('Mail').accounts.length"` times out, sample Mail
+(`sample Mail 1`) — a stack containing `MCMessage(ScriptingSupport) content`
+means it must be restarted.
 
-- Streaming or lazy evaluation
-- LIMIT clauses
-- Direct index access without full enumeration
+## Moves change message IDs
 
-**Technical Details:**
-
-```javascript
-// This takes 2.4 seconds for a mailbox with 59,707 messages
-let allMessages = mbox.messages();
-let first5 = allMessages.slice(0, 5);
-
-// Mail.app must:
-// 1. Query its SQLite database for all message IDs
-// 2. Create object references for each message
-// 3. Package them into a JavaScript array
-// 4. Return the array (only then can we slice it)
-```
-
-### What We Tried
-
-1. **Direct index access** - Not supported by Mail.app API
-2. **`.whose()` filtering for unread** - Reduced initial query time but accessing message properties took 60+ seconds
-3. **`.whose({id: messageID})` for specific message** - Still takes 4+ seconds (slower than iteration!)
-4. **Early slicing optimization** - Already implemented, can't slice before calling `.messages()`
-
-**Why `.whose()` doesn't help:**
-Mail.app's `.whose()` clause still enumerates all messages internally to filter them. It provides no performance benefit for large mailboxes.
-
-### Current Optimizations
-
-The code already implements several optimizations:
-
-1. **Early array slicing** - Limit processing immediately after getting messages
-2. **Smart multiplier** - Only fetch 3x messages when filters are active
-3. **Inline filtering** - Apply filters before iteration to reduce work
-4. **24-hour caching** - Avoid repeated expensive calls
-
-### Recommendations
-
-**For scripting/automation:**
-- Use specific mailboxes (INBOX, Sent) rather than "All Mail" when possible
-- Results are cached for 24 hours, so first call is slow but subsequent calls are instant
-- Consider the 3-6 second load time for large mailboxes as acceptable for batch operations
-
-**For interactive use:**
-- Prefer smaller, focused mailboxes
-- Use the cache warming (first load takes time, rest of day is fast)
-
-### Comparison with Other Accounts
-
-Performance varies by mailbox size, not account:
-
-```
-rmelton@gmail.com / All Mail (59,707 messages): 3.6s
-rmelton@gmail.com / INBOX (0 messages): 0.4s
-rmelton@gmail.com / Spam (850 messages): 0.6s
-robert.melton@gmail.com / INBOX (19 messages): 0.4s
-```
-
-### Not a Bug
-
-This is **expected behavior** given Mail.app's API design. All AppleScript/JXA-based Mail.app tools share this limitation.
+When a message is moved (archive, move, delete) Mail assigns it a new ID in the
+destination mailbox. Re-list the destination if you need to act on it again.

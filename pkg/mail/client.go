@@ -117,20 +117,25 @@ type Attachment struct {
 // match names against enumerated mailbox objects instead.
 const jsResolveMailbox = `
 function resolveMailbox(acc, name) {
-	function walk(mailboxes) {
-		for (let j = 0; j < mailboxes.length; j++) {
-			if (mailboxes[j].name() === name) return mailboxes[j];
+	// Bulk-fetch names at each level (one IPC call) instead of calling
+	// name() per mailbox; only descend into sub-mailboxes when no match.
+	function walk(container) {
+		const names = container.mailboxes.name();
+		for (let j = 0; j < names.length; j++) {
+			if (names[j] === name) return container.mailboxes.at(j);
+		}
+		for (let j = 0; j < names.length; j++) {
 			try {
-				const sub = mailboxes[j].mailboxes();
-				if (sub.length > 0) {
-					const found = walk(sub);
+				const child = container.mailboxes.at(j);
+				if (child.mailboxes.length > 0) {
+					const found = walk(child);
 					if (found) return found;
 				}
 			} catch (e) {}
 		}
 		return null;
 	}
-	return walk(acc.mailboxes());
+	return walk(acc);
 }
 // resolveMessage returns a message specifier by Mail's global message id,
 // or null if no such message exists. byId() is a direct object specifier
@@ -507,11 +512,13 @@ func (c *Client) SyncAllAccounts() error {
 	return err
 }
 
-// GetMailboxesJSON retrieves mailboxes as JSON using JXA
-func (c *Client) GetMailboxesJSON(accountName string) ([]Mailbox, error) {
+// GetMailboxesJSON retrieves mailboxes as JSON using JXA. withCounts also
+// fills TotalCount, which costs a full enumeration per mailbox (~200ms on
+// large ones).
+func (c *Client) GetMailboxesJSON(accountName string, withCounts bool) ([]Mailbox, error) {
 	// If specific account requested, use single JXA call
 	if accountName != "" {
-		return c.getMailboxesForSingleAccount(accountName)
+		return c.getMailboxesForSingleAccount(accountName, withCounts)
 	}
 
 	// For all accounts, fetch in parallel for better performance
@@ -526,7 +533,7 @@ func (c *Client) GetMailboxesJSON(accountName string) ([]Mailbox, error) {
 
 	// If only one account total, no need for parallelization
 	if len(accounts) == 1 {
-		return c.getMailboxesForSingleAccount(accounts[0].Name)
+		return c.getMailboxesForSingleAccount(accounts[0].Name, withCounts)
 	}
 
 	// Use channel to collect results from goroutines
@@ -539,7 +546,7 @@ func (c *Client) GetMailboxesJSON(accountName string) ([]Mailbox, error) {
 	// Launch goroutine for each account
 	for _, account := range accounts {
 		go func(accName string) {
-			mailboxes, err := c.getMailboxesForSingleAccount(accName)
+			mailboxes, err := c.getMailboxesForSingleAccount(accName, withCounts)
 			results <- result{mailboxes: mailboxes, err: err}
 		}(account.Name)
 	}
@@ -565,7 +572,11 @@ func (c *Client) GetMailboxesJSON(accountName string) ([]Mailbox, error) {
 }
 
 // getMailboxesForSingleAccount retrieves mailboxes for a specific account
-func (c *Client) getMailboxesForSingleAccount(accountName string) ([]Mailbox, error) {
+func (c *Client) getMailboxesForSingleAccount(accountName string, withCounts bool) ([]Mailbox, error) {
+	countExpr := "0"
+	if withCounts {
+		countExpr = "acc.mailboxes.at(j).messages.length"
+	}
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 const result = [];
@@ -573,15 +584,16 @@ const result = [];
 try {
 	const acc = mail.accounts.byName('%s');
 	const accName = acc.name();
-	const mailboxes = acc.mailboxes();
-	for (let j = 0; j < mailboxes.length; j++) {
-		const mbox = mailboxes[j];
+	// Bulk property reads: one IPC call per property instead of per mailbox.
+	const names = acc.mailboxes.name();
+	const unread = acc.mailboxes.unreadCount();
+	for (let j = 0; j < names.length; j++) {
 		try {
 			let totalCount = 0;
-			try { totalCount = mbox.messages.count(); } catch (e) {}
+			try { totalCount = %s; } catch (e) {}
 			result.push({
-				name: mbox.name(),
-				unreadCount: mbox.unreadCount(),
+				name: names[j],
+				unreadCount: unread[j],
 				totalCount: totalCount,
 				account: accName
 			});
@@ -594,7 +606,7 @@ try {
 }
 
 JSON.stringify(result);
-`, escapeJSString(accountName))
+`, escapeJSString(accountName), countExpr)
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -611,23 +623,21 @@ JSON.stringify(result);
 
 // GetMessagesJSON retrieves messages from a mailbox using JXA
 func (c *Client) GetMessagesJSON(accountName, mailboxName string, limit, offset int, unreadOnly, flaggedOnly, withContent bool, since string) ([]Message, error) {
-	// Build filter/offset/limit clauses using index-based approach.
-	// Bulk property accessors (mbox.messages.readStatus()) fetch all values in a
-	// single IPC call rather than one round-trip per message.
+	// Filters operate on an index array using bulk property accessors
+	// (M.readStatus() is one IPC call for the whole mailbox).
 	unreadFilter := ""
 	if unreadOnly {
-		unreadFilter = "{ const rs = mbox.messages.readStatus(); indices = indices.filter(i => !rs[i]); }"
+		unreadFilter = "{ const rs = M.readStatus(); indices = indices.filter(i => !rs[i]); }"
 	}
 
 	flaggedFilter := ""
 	if flaggedOnly {
-		flaggedFilter = "{ const fs = mbox.messages.flaggedStatus(); indices = indices.filter(i => fs[i]); }"
+		flaggedFilter = "{ const fs = M.flaggedStatus(); indices = indices.filter(i => fs[i]); }"
 	}
 
 	sinceFilter := ""
 	if since != "" {
-		// Bulk-fetch all received dates in one IPC call, then filter by index
-		sinceFilter = fmt.Sprintf("{ const sd = new Date('%s'); const allDates = mbox.messages.dateReceived(); indices = indices.filter(i => { const d = allDates[i]; return d && d >= sd; }); }", escapeJSString(since))
+		sinceFilter = fmt.Sprintf("{ const sd = new Date('%s'); const allDates = M.dateReceived(); indices = indices.filter(i => { const d = allDates[i]; return d && d >= sd; }); }", escapeJSString(since))
 	}
 
 	offsetClause := ""
@@ -642,7 +652,9 @@ func (c *Client) GetMessagesJSON(accountName, mailboxName string, limit, offset 
 
 	contentField := "content: '',"
 	if withContent {
-		contentField = "content: msg.content() || '',"
+		// content() is never bulk-fetched: it is large and can trigger a
+		// blocking body download inside Mail.app.
+		contentField = "content: M.byId(cols.id[i]).content() || '',"
 	}
 
 	script := fmt.Sprintf(`
@@ -655,31 +667,50 @@ try {
 	if (!mbox) throw 'Mailbox not found';
 	const accName = acc.name();
 	const mboxName = mbox.name();
-	const messages = mbox.messages();
+	const M = mbox.messages;
+	const total = M.length;
 
-	// Index array; all filtering operates on indices so property access is bulk/deferred
-	let indices = Array.from({length: messages.length}, (_, i) => i);
+	let indices = Array.from({length: total}, (_, i) => i);
+	%s
+	%s
+	%s
+	%s
+	%s
 
-	// Bulk property filters (1 IPC call each instead of N)
-	%s
-	%s
-	%s
-	%s
-	%s
+	// Each per-message property read is one ~10ms Apple event; a bulk read
+	// of one property over the whole mailbox costs ~35us per message. So
+	// bulk-fetch everything when the mailbox is small relative to the page,
+	// otherwise read per-message for just the page.
+	const PROPS = ['id', 'subject', 'sender', 'dateReceived', 'dateSent', 'readStatus', 'flaggedStatus', 'deletedStatus'];
+	// Index specifiers (M.at(i)) re-enumerate the mailbox on every access,
+	// so the per-message path resolves by id instead (ids are cheap in bulk).
+	const useBulk = total <= Math.max(2000, indices.length * 300);
+	const cols = { id: M.id() };
+	let get;
+	if (useBulk) {
+		for (const p of PROPS) if (p !== 'id') cols[p] = M[p]();
+		get = (i, p) => cols[p][i];
+	} else {
+		const refs = {};
+		get = (i, p) => {
+			if (p === 'id') return cols.id[i];
+			if (!refs[i]) refs[i] = M.byId(cols.id[i]);
+			return refs[i][p]();
+		};
+	}
 
 	for (let k = 0; k < indices.length; k++) {
 		const i = indices[k];
-		const msg = messages[i];
-		try { if (msg.deletedStatus()) continue; } catch(e) {}
 		try {
+			if (get(i, 'deletedStatus')) continue;
 			result.push({
-				id: String(msg.id()),
-				subject: msg.subject() || '',
-				sender: msg.sender() || '',
-				dateReceived: (msg.dateReceived() || new Date()).toISOString(),
-				dateSent: (msg.dateSent() || new Date()).toISOString(),
-				read: msg.readStatus(),
-				flagged: msg.flaggedStatus(),
+				id: String(get(i, 'id')),
+				subject: get(i, 'subject') || '',
+				sender: get(i, 'sender') || '',
+				dateReceived: (get(i, 'dateReceived') || new Date()).toISOString(),
+				dateSent: (get(i, 'dateSent') || new Date()).toISOString(),
+				read: get(i, 'readStatus'),
+				flagged: get(i, 'flaggedStatus'),
 				messageSize: 0,
 				%s
 				mailbox: mboxName,
@@ -694,7 +725,8 @@ try {
 }
 
 JSON.stringify(result);
-`, escapeJSString(accountName), escapeJSString(mailboxName), unreadFilter, flaggedFilter, sinceFilter, offsetClause, limitClause, contentField)
+`, escapeJSString(accountName), escapeJSString(mailboxName),
+		unreadFilter, flaggedFilter, sinceFilter, offsetClause, limitClause, contentField)
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -921,7 +953,7 @@ func (c *Client) SearchMessagesJSON(query string, accountName string, mailboxNam
 	}
 
 	// Get list of mailboxes to search
-	mailboxes, err := c.GetMailboxesJSON(accountName)
+	mailboxes, err := c.GetMailboxesJSON(accountName, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get mailboxes: %w", err)
 	}
