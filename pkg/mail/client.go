@@ -1437,9 +1437,11 @@ func (c *Client) GetUnifiedMessagesJSON(mailboxType string, limit, offset int, w
 // getInboxBasedUnified fetches messages from each account's INBOX using the
 // proven GetMessagesJSON path, then merges, sorts, and slices globally.
 func (c *Client) getInboxBasedUnified(mailboxType string, limit, offset int, withContent bool) ([]Message, error) {
-	accounts, err := c.GetAccountsJSON()
+	// Resolve each account's real inbox name ("INBOX" vs "Inbox") via Mail's
+	// unified inbox rather than assuming a name.
+	refs, err := c.GetSpecialMailboxRefs("inbox")
 	if err != nil {
-		return nil, fmt.Errorf("failed to list accounts: %w", err)
+		return nil, fmt.Errorf("failed to resolve inboxes: %w", err)
 	}
 
 	// Over-fetch per account so the global sort+slice is accurate.
@@ -1460,13 +1462,10 @@ func (c *Client) getInboxBasedUnified(mailboxType string, limit, offset int, wit
 	}
 
 	var requests []req
-	for _, acc := range accounts {
-		if !acc.Enabled {
-			continue
-		}
+	for _, r := range refs {
 		requests = append(requests, req{
-			AccountName: acc.Name,
-			MailboxName: "INBOX",
+			AccountName: r.Account,
+			MailboxName: r.Mailbox,
 			Limit:       perLimit,
 			Offset:      0,
 			UnreadOnly:  mailboxType == "unread",
@@ -1487,90 +1486,100 @@ func (c *Client) getInboxBasedUnified(mailboxType string, limit, offset int, wit
 	return sortAndSlice(messages, offset, limit), nil
 }
 
-// getSpecialMailboxUnified fetches messages from Mail.app's built-in special
-// mailbox collections (sentMailboxes, draftMailboxes, trashMailboxes,
-// junkMailboxes) via a single JXA call.  No per-message filtering is applied
-// since these views don't need unread/flagged filtering.
-func (c *Client) getSpecialMailboxUnified(mailboxType string, limit, offset int, withContent bool) ([]Message, error) {
-	// Mail.app exposes unified special mailboxes as singular application
-	// properties (trashMailbox, junkMailbox, ...); their .mailboxes() are the
-	// per-account boxes. The plural forms do not exist in JXA.
-	accessor := map[string]string{
+// SpecialMailboxRef names one account's mailbox within a Mail.app unified
+// mailbox (inbox, sentMailbox, draftsMailbox, trashMailbox, junkMailbox).
+type SpecialMailboxRef struct {
+	Account string `json:"account"`
+	Mailbox string `json:"mailbox"`
+}
+
+// GetSpecialMailboxRefs resolves the per-account mailboxes behind one of
+// Mail.app's unified mailboxes in a single JXA call, so provider naming
+// ("Inbox" vs "INBOX", "Trash" vs "Deleted Items") is handled by Mail.
+// kind is one of inbox, sent, drafts, trash, junk.
+func (c *Client) GetSpecialMailboxRefs(kind string) ([]SpecialMailboxRef, error) {
+	accessor, ok := map[string]string{
+		"inbox":  "inbox",
 		"sent":   "sentMailbox",
 		"drafts": "draftsMailbox",
 		"trash":  "trashMailbox",
 		"junk":   "junkMailbox",
-	}[mailboxType]
+	}[kind]
+	if !ok {
+		return nil, fmt.Errorf("unknown special mailbox kind: %s", kind)
+	}
+	script := fmt.Sprintf(`
+const mail = Application('Mail');
+const result = [];
+const subs = mail.%s().mailboxes();
+for (let i = 0; i < subs.length; i++) {
+	try { result.push({ account: subs[i].account().name(), mailbox: subs[i].name() }); } catch (e) {}
+}
+JSON.stringify(result);
+`, accessor)
+	output, err := c.runJXA(script)
+	if err != nil {
+		return nil, err
+	}
+	var refs []SpecialMailboxRef
+	if err := json.Unmarshal([]byte(output), &refs); err != nil {
+		return nil, fmt.Errorf("failed to parse mailbox refs: %w", err)
+	}
+	return refs, nil
+}
+
+// getSpecialMailboxUnified lists a unified special mailbox by resolving the
+// per-account boxes and fetching each concurrently through GetMessagesJSON
+// (the bulk/byId fast path), then merging, sorting and slicing globally.
+func (c *Client) getSpecialMailboxUnified(mailboxType string, limit, offset int, withContent bool) ([]Message, error) {
+	refs, err := c.GetSpecialMailboxRefs(mailboxType)
+	if err != nil {
+		return nil, err
+	}
+	if len(refs) == 0 {
+		return []Message{}, nil
+	}
 
 	perLimit := limit + offset
 	if perLimit < 50 {
 		perLimit = 50
 	}
 
-	contentField := "content: '',"
-	if withContent {
-		contentField = "content: msg.content() || '',"
+	var requests []struct {
+		AccountName string
+		MailboxName string
+		Limit       int
+		Offset      int
+		UnreadOnly  bool
+		FlaggedOnly bool
+		WithContent bool
+		Since       string
+	}
+	for _, r := range refs {
+		requests = append(requests, struct {
+			AccountName string
+			MailboxName string
+			Limit       int
+			Offset      int
+			UnreadOnly  bool
+			FlaggedOnly bool
+			WithContent bool
+			Since       string
+		}{AccountName: r.Account, MailboxName: r.Mailbox, Limit: perLimit, WithContent: withContent})
 	}
 
-	script := fmt.Sprintf(`
-const mail = Application('Mail');
-const result = [];
-const mailboxes = mail.%s().mailboxes();
-
-for (let m = 0; m < mailboxes.length; m++) {
-	const mbox = mailboxes[m];
-	let accName = '';
-	let mboxName = '';
-	try { accName = mbox.account().name(); } catch(e) {
-		try { accName = mbox.account.name(); } catch(e2) { accName = ''; }
-	}
-	try { mboxName = mbox.name(); } catch(e) { mboxName = '%s'; }
-
-	let messages;
-	try { messages = mbox.messages(); } catch(e) { continue; }
-
-	// Cap per-mailbox before iterating
-	const cap = Math.min(messages.length, %d);
-
-	for (let k = 0; k < cap; k++) {
-		const msg = messages[k];
-		try { if (msg.deletedStatus()) continue; } catch(e) {}
-		try {
-			result.push({
-				id: String(msg.id()),
-				subject: msg.subject() || '',
-				sender: msg.sender() || '',
-				dateReceived: (msg.dateReceived() || new Date()).toISOString(),
-				dateSent: (msg.dateSent() || new Date()).toISOString(),
-				read: msg.readStatus(),
-				flagged: msg.flaggedStatus(),
-				messageSize: 0,
-				%s
-				mailbox: mboxName,
-				account: accName
-			});
-		} catch(e) {}
-	}
-}
-
-JSON.stringify(result);
-`, accessor, mailboxType, perLimit, contentField)
-
-	output, err := c.runJXA(script)
+	messages, err := c.GetMessagesFromMultipleMailboxes(requests)
 	if err != nil {
 		return nil, err
 	}
-
-	var messages []Message
-	if err := json.Unmarshal([]byte(output), &messages); err != nil {
-		return nil, fmt.Errorf("failed to parse %s messages JSON: %w", mailboxType, err)
-	}
-
 	return sortAndSlice(messages, offset, limit), nil
 }
 
 // sortAndSlice sorts messages by date descending then applies offset and limit.
 func sortAndSlice(messages []Message, offset, limit int) []Message {
+	if messages == nil {
+		messages = []Message{}
+	}
 	sort.Slice(messages, func(i, j int) bool {
 		return messages[i].DateReceived > messages[j].DateReceived
 	})
