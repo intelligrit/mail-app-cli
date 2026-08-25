@@ -128,9 +128,13 @@ From the message view:
 | `q` | `quit-window` | Quit window |
 | `?` | `describe-mode` | Show help |
 
-Bulk actions on marked messages are sent to `mail-app-cli` as one multi-ID
-call per account/mailbox, so marking fifty messages and pressing `x` costs one
-Mail.app round trip, not fifty.
+Bulk actions on marked messages are one `mail-app-cli` call regardless of how
+many accounts the messages span, so marking fifty messages and pressing `x`
+costs one Mail.app round trip, not fifty.
+
+Archiving Gmail messages is not possible through Mail.app scripting; what
+happens to them is governed by `mail-app-gmail-archive-action` (`skip` and
+report by default, `delete` to Trash, or `read`).
 
 ### Message View Mode
 
@@ -192,6 +196,7 @@ Available customization options:
 - `mail-app-default-account`: Default account to use (or nil to prompt)
 - `mail-app-message-limit`: Maximum number of messages to display
 - `mail-app-mark-as-read-on-view`: Auto-mark messages as read when viewing (default: t)
+- `mail-app-gmail-archive-action`: What archive does to Gmail messages: `skip` (default), `delete`, or `read`
 - `mail-app-no-content-mailbox-regexp`: Mailboxes (Trash, Deleted Items, Spam, Junk...) whose bodies are never fetched even with content reading on; the unified trash/junk views are always excluded
 - `mail-app-mailbox-counts`: Show total message counts in mailbox lists (default: nil; costs ~3s vs <1s)
 - `mail-app-default-accounts-sort-method`: Default sort for accounts list

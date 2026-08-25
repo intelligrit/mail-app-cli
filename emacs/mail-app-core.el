@@ -37,6 +37,23 @@ If nil, you will be prompted to select one when needed."
 
 
 
+(defcustom mail-app-gmail-archive-action 'skip
+  "What archiving does to messages in Gmail accounts.
+Mail.app offers no safe scriptable archive for Gmail (scripted moves out
+of INBOX revert on the next sync).  `skip' leaves them untouched and
+reports them; `delete' moves them to Trash (Gmail's own delete); `read'
+marks them read and leaves them in the inbox."
+  :type '(choice (const :tag "Skip and report" skip)
+                 (const :tag "Move to Trash" delete)
+                 (const :tag "Mark read" read))
+  :group 'mail-app)
+
+(defun mail-app--gmail-archive-flag ()
+  "Return the `--gmail' argument list for archive commands."
+  (list (format "--gmail=%s" mail-app-gmail-archive-action)))
+
+
+
 (defcustom mail-app-mailbox-counts nil
   "If non-nil, ask mail-app-cli for total message counts in mailbox lists.
 Totals require enumerating every mailbox (roughly 3s instead of under 1s
@@ -527,70 +544,58 @@ PROGRESS-CALLBACK if provided is called with (completed total) for each operatio
         (funcall process-next)))))
 
 
-(defun mail-app--parse-batch-output (output requested)
-  "Parse OUTPUT of a multi-ID mail-app-cli mutation for REQUESTED ids.
-Return (SUCCESS . FAILED) counts.  The CLI prints \"Message VERB\" or
-\"N messages VERB\" on success and \"K of N messages failed (...)\" when
-some ids were missing or errored."
-  (let ((failed (if (string-match "\\([0-9]+\\) of [0-9]+ messages failed" output)
-                    (string-to-number (match-string 1 output))
-                  (if (string-match-p "\\`error:\\|^Error:" output) requested 0))))
-    (cons (max 0 (- requested failed)) failed)))
+(defun mail-app--parse-mutation-output (output)
+  "Parse the JSON summary a global-ID mutation prints to stdout.
+OUTPUT may also contain the stderr summary line before or after the JSON.
+Returns a plist (:ok N :missing N :failed N :skipped N :results LIST) or
+nil if no JSON object is present."
+  (condition-case nil
+      (let ((start (string-match "{" output))
+            (end (and (string-match "}[^}]*\\'" output) (match-beginning 0))))
+        (when (and start end (< start end))
+          (let ((obj (json-parse-string (substring output start (1+ end))
+                                        :object-type 'alist :array-type 'list)))
+            (list :ok (or (alist-get 'ok obj) 0)
+                  :missing (or (alist-get 'missing obj) 0)
+                  :failed (or (alist-get 'failed obj) 0)
+                  :skipped (or (alist-get 'skipped obj) 0)
+                  :results (alist-get 'results obj)))))
+    (error nil)))
 
-(defun mail-app--run-batch-async (ids build-args on-complete &optional progress-callback)
-  "Apply one mail-app-cli mutation to IDS, one process per account/mailbox.
-IDS are message ids present in `mail-app-messages-data' (falling back to
-`mail-app-current-account' / `mail-app-current-mailbox' for context).
-BUILD-ARGS is called with (ID-LIST ACCOUNT MAILBOX) and must return the
-full argument list for `mail-app-cli', e.g.
-  (append (list \"messages\" \"delete\") id-list (list \"-a\" account \"-m\" mailbox)).
-ON-COMPLETE is called with (SUCCESS-COUNT ERROR-COUNT TOTAL).
-PROGRESS-CALLBACK, if given, is called with (COMPLETED TOTAL) after each group.
-Grouping means a hundred marked messages in one mailbox cost a single
-Mail.app round trip instead of a hundred."
-  (let ((groups nil)
-        (unresolved 0))
-    (dolist (id ids)
-      (let* ((msg (seq-find (lambda (m) (equal (plist-get m :id) id))
-                            mail-app-messages-data))
-             (account (or (plist-get msg :account) mail-app-current-account))
-             (mailbox (or (plist-get msg :mailbox) mail-app-current-mailbox))
-             (key (cons account mailbox))
-             (cell (assoc key groups)))
-        (cond
-         ((not (and account mailbox))
-          ;; No context to address this id: count it as a failure rather
-          ;; than launching a process with nil arguments.
-          (setq unresolved (1+ unresolved)))
-         (cell (setcdr cell (cons (format "%s" id) (cdr cell))))
-         (t (push (cons key (list (format "%s" id))) groups)))))
-    (let* ((remaining (nreverse groups))
-           (total (length ids))
-           (done unresolved)
-           (success 0)
-           (errors unresolved))
-      (if (null remaining)
-          (funcall on-complete 0 unresolved total)
-        (letrec ((process-next
-                  (lambda ()
-                    (if (null remaining)
-                        (funcall on-complete success errors total)
-                      (let* ((group (pop remaining))
-                             (account (car (car group)))
-                             (mailbox (cdr (car group)))
-                             (id-list (nreverse (cdr group)))
-                             (n (length id-list)))
-                        (apply #'mail-app--run-command-async
-                               (lambda (output)
-                                 (let ((counts (mail-app--parse-batch-output output n)))
-                                   (setq success (+ success (car counts)))
-                                   (setq errors (+ errors (cdr counts)))
-                                   (setq done (+ done n))
-                                   (when progress-callback
-                                     (funcall progress-callback done total))
-                                   (funcall process-next)))
-                               (funcall build-args id-list account mailbox)))))))
-          (funcall process-next))))))
+(defun mail-app--run-mutation-async (ids on-complete &rest args)
+  "Run one global-ID mutation on IDS in a single mail-app-cli process.
+ARGS are the leading arguments, e.g. (\"messages\" \"archive\"); IDS are
+appended, followed by any strings in the tail of ARGS after the symbol
+`:after' (used for move's target and for flags).  Because Mail.app message
+IDs are unique across accounts, no account/mailbox context is needed and
+messages from any mix of accounts go in one round trip.
+ON-COMPLETE is called with the plist from `mail-app--parse-mutation-output',
+or with (:ok 0 :failed N :error STRING) if the output could not be parsed."
+  (let* ((split (memq :after args))
+         (head (if split (seq-take args (- (length args) (length split))) args))
+         (tail (cdr split))
+         (n (length ids)))
+    (apply #'mail-app--run-command-async
+           (lambda (output)
+             (funcall on-complete
+                      (or (mail-app--parse-mutation-output output)
+                          (list :ok 0 :missing 0 :failed n :skipped 0
+                                :error (string-trim output)))))
+           (append head (mapcar (lambda (id) (format "%s" id)) ids) tail))))
+
+(defun mail-app--mutation-summary (result verb-past)
+  "Build a human/speech summary string for mutation RESULT.
+VERB-PAST is e.g. \"Archived\"."
+  (let ((ok (plist-get result :ok))
+        (failed (+ (plist-get result :missing) (plist-get result :failed)))
+        (skipped (plist-get result :skipped))
+        (err (plist-get result :error)))
+    (concat (format "%s %d message%s" verb-past ok (if (= ok 1) "" "s"))
+            (if (> skipped 0)
+                (format ", %d Gmail skipped (archive them in Mail or Gmail)" skipped)
+              "")
+            (if (> failed 0) (format ", %d failed" failed) "")
+            (if err (format ": %s" err) ""))))
 
 (defun mail-app--parse-mark-read-output (output)
   "Parse `mailboxes mark-read' JSON OUTPUT into total changed count.

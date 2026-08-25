@@ -1061,19 +1061,18 @@ each message. When disabled, only subject and sender are read."
         (message "No message at point")
       (mail-app--speak "Archiving message" 'select-object)
       (let* ((id (plist-get message :id))
-             ;; Get account/mailbox from message data (for unified views)
-             (account (or (plist-get message :account) mail-app-current-account))
-             (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
              (buf (current-buffer)))
         (mail-app--run-command-async
          (lambda (output)
-           (when (buffer-live-p buf)
-             (with-current-buffer buf
-               (mail-app--speak "Archived" 'task-done)
-               (mail-app-refresh))))
+           (let* ((result (mail-app--parse-mutation-output output))
+                  (msg (if result (mail-app--mutation-summary result "Archived") "Archived")))
+             (message "%s" msg)
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+                 (mail-app--speak msg 'task-done)
+                 (mail-app-refresh)))))
          "messages" "archive" id
-         "-a" account
-         "-m" mailbox)))))
+         (car (mail-app--gmail-archive-flag)))))))
 
 
 
@@ -1227,8 +1226,7 @@ each message. When disabled, only subject and sender are read."
            (with-selected-window win
              (quit-window))))
        "messages" "archive" mail-app-current-message-id
-       "-a" mail-app-current-account
-       "-m" mail-app-current-mailbox))))
+       (car (mail-app--gmail-archive-flag))))))
 
 
 
@@ -1594,12 +1592,11 @@ each message. When disabled, only subject and sender are read."
 
 
 
-(defun mail-app--act-on-marked (verb-args label done-fmt &optional confirm)
-  "Apply one mutation to all marked messages in as few CLI calls as possible.
-VERB-ARGS is a function of (ID-LIST ACCOUNT MAILBOX) returning the CLI
-argument list.  LABEL is spoken while working (\"Deleting\"); DONE-FMT is
-a format string taking (SUCCESS TOTAL).  When CONFIRM is non-nil, ask
-first."
+(defun mail-app--act-on-marked (label verb-past confirm &rest args)
+  "Apply one mutation to all marked messages in a single CLI call.
+LABEL is spoken while working (\"Deleting\"); VERB-PAST heads the summary
+(\"Deleted\"); when CONFIRM is non-nil, ask first.  ARGS are passed to
+`mail-app--run-mutation-async'."
   (if (null mail-app-marked-messages)
       (message "No messages marked")
     (let ((count (length mail-app-marked-messages)))
@@ -1609,82 +1606,65 @@ first."
         (let ((buf (current-buffer))
               (ids mail-app-marked-messages))
           (setq mail-app-marked-messages nil)
-          (mail-app--run-batch-async
-           ids verb-args
-           (lambda (success-count error-count total)
-             (let ((msg (concat (format done-fmt success-count total)
-                                (if (> error-count 0) (format " (%d failed)" error-count) ""))))
-               (message "%s" msg)
-               (mail-app--speak msg 'task-done))
-             (when (buffer-live-p buf)
-               (with-current-buffer buf
-                 (mail-app-refresh))))
-           (lambda (completed total)
-             (when (< completed total)
-               (message "%s %d/%d..." label completed total)))))))))
-
-(defun mail-app--messages-verb-args (verb &optional target extra)
-  "Return a VERB-ARGS builder for `messages VERB'.
-TARGET, if given, is placed after the ids (used by move).  EXTRA flags are
-appended."
-  (lambda (id-list account mailbox)
-    (append (list "messages" verb) id-list
-            (and target (list target))
-            (list "-a" account "-m" mailbox)
-            extra)))
+          (apply #'mail-app--run-mutation-async
+                 ids
+                 (lambda (result)
+                   (let ((msg (mail-app--mutation-summary result verb-past)))
+                     (message "%s" msg)
+                     (mail-app--speak msg 'task-done))
+                   (when (buffer-live-p buf)
+                     (with-current-buffer buf
+                       (mail-app-refresh))))
+                 args))))))
 
 
 
 (defun mail-app-delete-marked ()
   "Delete all marked messages."
   (interactive)
-  (mail-app--act-on-marked (mail-app--messages-verb-args "delete")
-                           "Deleting" "Deleted %d of %d messages" t))
+  (mail-app--act-on-marked "Deleting" "Deleted" t "messages" "delete"))
 
 
 
 (defun mail-app-archive-marked ()
-  "Archive all marked messages."
+  "Archive all marked messages.
+Gmail messages follow `mail-app-gmail-archive-action'."
   (interactive)
-  (mail-app--act-on-marked (mail-app--messages-verb-args "archive")
-                           "Archiving" "Archived %d of %d messages"))
+  (apply #'mail-app--act-on-marked "Archiving" "Archived" nil
+         "messages" "archive" :after (mail-app--gmail-archive-flag)))
 
 
 
 (defun mail-app-flag-marked ()
   "Flag all marked messages."
   (interactive)
-  (mail-app--act-on-marked (mail-app--messages-verb-args "flag" nil '("--flagged=true"))
-                           "Flagging" "Flagged %d of %d messages"))
+  (mail-app--act-on-marked "Flagging" "Flagged" nil "messages" "flag" :after "--flagged=true"))
 
 
 
 (defun mail-app-mark-marked-as-read ()
   "Mark all marked messages as read."
   (interactive)
-  (mail-app--act-on-marked (mail-app--messages-verb-args "mark" nil '("--read=true"))
-                           "Marking as read" "Marked %d of %d messages as read"))
+  (mail-app--act-on-marked "Marking as read" "Marked read" nil "messages" "mark" :after "--read=true"))
 
 
 
 (defun mail-app-mark-marked-as-unread ()
   "Mark all marked messages as unread."
   (interactive)
-  (mail-app--act-on-marked (mail-app--messages-verb-args "mark" nil '("--read=false"))
-                           "Marking as unread" "Marked %d of %d messages as unread"))
+  (mail-app--act-on-marked "Marking as unread" "Marked unread" nil "messages" "mark" :after "--read=false"))
 
 
 
 (defun mail-app-junk-marked ()
   "Mark all marked messages as junk (move to Junk mailbox)."
   (interactive)
-  (mail-app--act-on-marked (mail-app--messages-verb-args "move" "Junk")
-                           "Marking as junk" "Marked %d of %d messages as junk"))
+  (mail-app--act-on-marked "Marking as junk" "Junked" nil "messages" "move" :after "Junk"))
 
 
 
 (defun mail-app-move-marked (target-mailbox)
-  "Move all marked messages to TARGET-MAILBOX."
+  "Move all marked messages to TARGET-MAILBOX (resolved in each message's account)."
   (interactive
    (list (completing-read "Move to mailbox: "
                          (let* ((output (mail-app--run-command "mailboxes" "list"
@@ -1692,9 +1672,9 @@ appended."
                                 (mailboxes (mail-app--parse-mailboxes-output output)))
                            (mapcar (lambda (mbox) (plist-get mbox :name)) mailboxes))
                          nil t)))
-  (mail-app--act-on-marked (mail-app--messages-verb-args "move" target-mailbox)
-                           (format "Moving to %s" target-mailbox)
-                           (format "Moved %%d of %%d messages to %s" target-mailbox)))
+  (mail-app--act-on-marked (format "Moving to %s" target-mailbox)
+                           (format "Moved to %s:" target-mailbox) nil
+                           "messages" "move" :after target-mailbox))
 
 
 

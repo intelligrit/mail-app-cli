@@ -186,14 +186,18 @@ When calling from Emacs, the arguments are passed as a list:
 
 ### Bulk Actions
 
-- `mail-app--run-batch-async` (core) groups ids by account/mailbox and runs one
-  multi-ID `mail-app-cli messages VERB id1 id2 ... -a A -m M` per group.
+- Mutations use mail-app-cli's global-ID mode: `messages VERB id1 id2 ...`
+  with no `-a/-m` (Mail IDs are unique across accounts), so any mix of
+  accounts is one process and one Mail.app round trip.
+- `mail-app--run-mutation-async` (core) spawns that single process and hands
+  the parsed JSON summary (:ok :missing :failed :skipped :results) to the
+  callback; `mail-app--mutation-summary` formats it for message/speech.
 - `mail-app--act-on-marked` (commands) is the shared driver for every
-  `mail-app-*-marked` command; add new bulk actions through it, never by
-  looping `mail-app--run-command` per message.
+  `mail-app-*-marked` command.  Never loop `mail-app--run-command` per message.
+- Archive passes `--gmail=<mail-app-gmail-archive-action>`; Gmail messages
+  are skipped/deleted/marked-read per that option and reported.
 - `mail-app-mark-mailbox-as-read` / `mail-app-mark-special-read` use
-  `mail-app-cli mailboxes mark-read`, which returns JSON
-  `[{account, mailbox, changed}]` on stdout and a summary on stderr.
+  `mailboxes mark-read` (JSON `[{account, mailbox, changed}]` on stdout).
 - Moved/archived/deleted messages get a new ID in the destination mailbox.
 
 ### Message Actions (from list)
