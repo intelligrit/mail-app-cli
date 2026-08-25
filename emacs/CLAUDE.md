@@ -184,6 +184,18 @@ When calling from Emacs, the arguments are passed as a list:
 - `mail-app-view-message-at-point` - View full message at point
 - `mail-app-refresh` - Refresh current view
 
+### Bulk Actions
+
+- `mail-app--run-batch-async` (core) groups ids by account/mailbox and runs one
+  multi-ID `mail-app-cli messages VERB id1 id2 ... -a A -m M` per group.
+- `mail-app--act-on-marked` (commands) is the shared driver for every
+  `mail-app-*-marked` command; add new bulk actions through it, never by
+  looping `mail-app--run-command` per message.
+- `mail-app-mark-mailbox-as-read` / `mail-app-mark-special-read` use
+  `mail-app-cli mailboxes mark-read`, which returns JSON
+  `[{account, mailbox, changed}]` on stdout and a summary on stderr.
+- Moved/archived/deleted messages get a new ID in the destination mailbox.
+
 ### Message Actions (from list)
 
 - `mail-app-flag-message-at-point` - Toggle flag

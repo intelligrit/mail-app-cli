@@ -103,6 +103,8 @@ From the message view:
 | `p` | `previous-line` | Move to previous line |
 | `g` / `r` | `mail-app-refresh` | Refresh mailboxes list |
 | `s` | `mail-app-search` | Search all email |
+| `T` | `mail-app-mark-mailbox-as-read` | Mark every message in mailbox at point as read (one CLI call) |
+| `R` | `mail-app-mark-special-read` | Mark all accounts' trash / junk / archive as read |
 | `q` | `quit-window` | Quit window |
 | `?` | `describe-mode` | Show help |
 
@@ -120,8 +122,15 @@ From the message view:
 | `a` | `mail-app-archive-message-at-point` | Archive message |
 | `m` | `mail-app-mark-message-at-point` | Toggle read/unread status |
 | `u` | `mail-app-show-unread` | Toggle unread filter |
+| `m` / `M` | `mail-app-toggle-mark-at-point` / `-backward` | Mark message for a bulk action |
+| `x` | `mail-app-delete-marked` | Delete marked messages |
+| `,a` `,f` `,j` `,v` `,r` `,u` | `mail-app-*-marked` | Archive / flag / junk / move / read / unread marked messages |
 | `q` | `quit-window` | Quit window |
 | `?` | `describe-mode` | Show help |
+
+Bulk actions on marked messages are sent to `mail-app-cli` as one multi-ID
+call per account/mailbox, so marking fifty messages and pressing `x` costs one
+Mail.app round trip, not fifty.
 
 ### Message View Mode
 
@@ -183,6 +192,7 @@ Available customization options:
 - `mail-app-default-account`: Default account to use (or nil to prompt)
 - `mail-app-message-limit`: Maximum number of messages to display
 - `mail-app-mark-as-read-on-view`: Auto-mark messages as read when viewing (default: t)
+- `mail-app-mailbox-counts`: Show total message counts in mailbox lists (default: nil; costs ~3s vs <1s)
 - `mail-app-default-accounts-sort-method`: Default sort for accounts list
 - `mail-app-default-mailboxes-sort-method`: Default sort for mailboxes list
 - `mail-app-default-messages-sort-method`: Default sort for messages list
@@ -204,6 +214,10 @@ If commands fail or timeout:
 1. Ensure Mail.app is running
 2. Check Mail.app has at least one configured account
 3. Try running `mail-app-cli accounts list` from terminal to verify CLI works
+4. If even that hangs, Mail.app's scripting interface is wedged — usually by a
+   message-body fetch (`--with-content`, i.e. `mail-app-read-message-content`)
+   that stalled. Restart Mail.app. Avoid content fetching on large or junk
+   mailboxes.
 
 ### Emacspeak not speaking
 

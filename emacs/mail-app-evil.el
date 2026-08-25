@@ -84,6 +84,7 @@
       "J" 'mail-app-jump-to-mail-app
       "o" 'mail-app-toggle-mailboxes-sort
       "T" 'mail-app-mark-mailbox-as-read
+      "R" 'mail-app-mark-special-read
       "g" nil
       "gr" 'mail-app-refresh
       "r" 'mail-app-refresh
