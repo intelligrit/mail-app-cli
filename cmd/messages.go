@@ -27,6 +27,7 @@ var (
 	msgSince         string
 	msgNoCache       bool
 	msgForceRefresh  bool
+	msgGmailPolicy   string
 )
 
 // sanitizeCacheKey replaces non-alphanumeric chars so the key is safe as a filename component.
@@ -47,6 +48,10 @@ func sanitizeCacheKey(s string) string {
 func invalidateMailboxCache(account, mailbox string) {
 	if c, err := cache.New(); err == nil {
 		prefix := fmt.Sprintf("msgs-%s-%s-", sanitizeCacheKey(account), sanitizeCacheKey(mailbox))
+		if mailbox == "" {
+			// Every mailbox of the account.
+			prefix = fmt.Sprintf("msgs-%s-", sanitizeCacheKey(account))
+		}
 		c.DeletePrefix(prefix)
 	}
 }
@@ -157,31 +162,76 @@ func reportMutation(res *mail.MutationResult, verb string) error {
 	return res.Err()
 }
 
-func requireAccountMailbox() error {
-	if msgAccount == "" || msgMailbox == "" {
-		return fmt.Errorf("both --account and --mailbox are required")
+// runGlobal applies action to IDs without account/mailbox context, prints
+// the per-message JSON results to stdout and a summary to stderr, and
+// invalidates every mailbox cache touched.
+func runGlobal(ids []string, action, target, verb string) error {
+	summary, err := mail.NewClient().MutateMessagesGlobal(ids, action, target, msgGmailPolicy)
+	if err != nil {
+		return fmt.Errorf("failed to %s messages: %w", action, err)
 	}
-	return nil
+	touched := map[string]bool{}
+	for _, r := range summary.Results {
+		if r.Account != "" && !touched[r.Account] {
+			touched[r.Account] = true
+			invalidateMailboxCache(r.Account, "")
+		}
+	}
+	output, _ := json.MarshalIndent(summary, "", "  ")
+	fmt.Println(string(output))
+	line := fmt.Sprintf("%d messages %s", summary.OK, verb)
+	if summary.Skipped > 0 {
+		line += fmt.Sprintf(", %d skipped (Gmail)", summary.Skipped)
+	}
+	if summary.Missing+summary.Failed > 0 {
+		line += fmt.Sprintf(", %d failed", summary.Missing+summary.Failed)
+	}
+	fmt.Fprintln(os.Stderr, line)
+	return summary.Err()
 }
+
+// hasMailboxContext reports whether --account/--mailbox were both given.
+// Without them, commands resolve messages globally by ID.
+func hasMailboxContext() (bool, error) {
+	if msgAccount == "" && msgMailbox == "" {
+		return false, nil
+	}
+	if msgAccount == "" || msgMailbox == "" {
+		return false, fmt.Errorf("give both --account and --mailbox, or neither (IDs are then resolved globally)")
+	}
+	return true, nil
+}
+
+const globalHelp = `
+With --account and --mailbox the IDs are looked up in that mailbox. Without
+them, IDs are resolved globally (Mail.app message IDs are unique across all
+accounts), so one call can mix messages from any accounts; the output is then
+a JSON summary with a per-message status (ok, missing, failed, skipped).`
 
 var messagesMarkCmd = &cobra.Command{
 	Use:   "mark [message-id...]",
 	Short: "Mark messages as read/unread",
-	Long:  `Mark one or more messages as read or unread. All IDs are processed in a single Mail.app call.`,
+	Long:  `Mark one or more messages as read or unread. All IDs are processed in a single Mail.app call.` + globalHelp,
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := requireAccountMailbox(); err != nil {
+		scoped, err := hasMailboxContext()
+		if err != nil {
 			return err
+		}
+		status := "marked as unread"
+		action := "unread"
+		if msgRead {
+			status = "marked as read"
+			action = "read"
+		}
+		if !scoped {
+			return runGlobal(args, action, "", status)
 		}
 		res, err := mail.NewClient().MarkMessages(msgAccount, msgMailbox, args, msgRead)
 		if err != nil {
 			return fmt.Errorf("failed to mark messages: %w", err)
 		}
 		invalidateMailboxCache(msgAccount, msgMailbox)
-		status := "marked as unread"
-		if msgRead {
-			status = "marked as read"
-		}
 		return reportMutation(res, status)
 	},
 }
@@ -189,21 +239,27 @@ var messagesMarkCmd = &cobra.Command{
 var messagesFlagCmd = &cobra.Command{
 	Use:   "flag [message-id...]",
 	Short: "Flag or unflag messages",
-	Long:  `Set or unset the flagged status of one or more messages. All IDs are processed in a single Mail.app call.`,
+	Long:  `Set or unset the flagged status of one or more messages. All IDs are processed in a single Mail.app call.` + globalHelp,
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := requireAccountMailbox(); err != nil {
+		scoped, err := hasMailboxContext()
+		if err != nil {
 			return err
+		}
+		status := "unflagged"
+		action := "unflag"
+		if msgFlaggedSet {
+			status = "flagged"
+			action = "flag"
+		}
+		if !scoped {
+			return runGlobal(args, action, "", status)
 		}
 		res, err := mail.NewClient().FlagMessages(msgAccount, msgMailbox, args, msgFlaggedSet)
 		if err != nil {
 			return fmt.Errorf("failed to flag messages: %w", err)
 		}
 		invalidateMailboxCache(msgAccount, msgMailbox)
-		status := "unflagged"
-		if msgFlaggedSet {
-			status = "flagged"
-		}
 		return reportMutation(res, status)
 	},
 }
@@ -212,11 +268,15 @@ var messagesDeleteCmd = &cobra.Command{
 	Use:   "delete [message-id...]",
 	Short: "Delete messages",
 	Long: `Move one or more messages to the trash. All IDs are processed in a single Mail.app call.
-Deleting a message that is already in Trash removes it permanently.`,
+Deleting a message that is already in Trash removes it permanently.` + globalHelp,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := requireAccountMailbox(); err != nil {
+		scoped, err := hasMailboxContext()
+		if err != nil {
 			return err
+		}
+		if !scoped {
+			return runGlobal(args, "delete", "", "deleted")
 		}
 		res, err := mail.NewClient().DeleteMessages(msgAccount, msgMailbox, args)
 		if err != nil {
@@ -231,11 +291,22 @@ var messagesArchiveCmd = &cobra.Command{
 	Use:   "archive [message-id...]",
 	Short: "Archive messages",
 	Long: `Move one or more messages to the Archive mailbox. All IDs are processed in a single Mail.app call.
-Gmail accounts are refused: Mail.app has no safe scriptable archive for Gmail (see README).`,
+Gmail accounts cannot be archived via Mail.app scripting (see README); --gmail
+chooses what happens to Gmail messages: skip (default, reported as skipped),
+delete (move to Trash) or read (mark as read and leave in place).` + globalHelp,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := requireAccountMailbox(); err != nil {
+		switch msgGmailPolicy {
+		case "skip", "delete", "read":
+		default:
+			return fmt.Errorf("--gmail must be skip, delete or read")
+		}
+		scoped, err := hasMailboxContext()
+		if err != nil {
 			return err
+		}
+		if !scoped {
+			return runGlobal(args, "archive", "", "archived")
 		}
 		res, err := mail.NewClient().ArchiveMessages(msgAccount, msgMailbox, args)
 		if err != nil {
@@ -250,14 +321,19 @@ Gmail accounts are refused: Mail.app has no safe scriptable archive for Gmail (s
 var messagesMoveCmd = &cobra.Command{
 	Use:   "move [message-id...] [target-mailbox]",
 	Short: "Move messages to another mailbox",
-	Long:  `Move one or more messages to a different mailbox. The last argument is the target mailbox. All IDs are processed in a single Mail.app call.`,
-	Args:  cobra.MinimumNArgs(2),
+	Long: `Move one or more messages to a different mailbox. The last argument is the target mailbox. All IDs are processed in a single Mail.app call.` + globalHelp + `
+When resolving globally, the target is looked up within each message's own account.`,
+	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := requireAccountMailbox(); err != nil {
+		scoped, err := hasMailboxContext()
+		if err != nil {
 			return err
 		}
 		ids := args[:len(args)-1]
 		targetMailbox := args[len(args)-1]
+		if !scoped {
+			return runGlobal(ids, "move", targetMailbox, "moved to "+targetMailbox)
+		}
 		res, err := mail.NewClient().MoveMessages(msgAccount, msgMailbox, ids, targetMailbox)
 		if err != nil {
 			return fmt.Errorf("failed to move messages: %w", err)
@@ -352,8 +428,9 @@ func init() {
 	messagesCmd.AddCommand(messagesJunkCmd)
 
 	// Common flags for all message commands
-	messagesCmd.PersistentFlags().StringVarP(&msgAccount, "account", "a", "", "Account name (required)")
-	messagesCmd.PersistentFlags().StringVarP(&msgMailbox, "mailbox", "m", "", "Mailbox name (required)")
+	messagesCmd.PersistentFlags().StringVarP(&msgAccount, "account", "a", "", "Account name (required for list/show; optional for mutations)")
+	messagesCmd.PersistentFlags().StringVarP(&msgMailbox, "mailbox", "m", "", "Mailbox name (required for list/show; optional for mutations)")
+	messagesArchiveCmd.Flags().StringVar(&msgGmailPolicy, "gmail", "skip", "What to do with Gmail messages: skip, delete or read")
 
 	// List-specific flags
 	messagesListCmd.Flags().IntVarP(&msgLimit, "limit", "l", 25, "Maximum number of messages to display")

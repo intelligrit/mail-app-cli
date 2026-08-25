@@ -1889,3 +1889,142 @@ JSON.stringify(results);
 	}
 	return results, nil
 }
+
+// GlobalResult is the per-message outcome of a global (no account/mailbox)
+// mutation. Status is one of ok, missing, failed, skipped.
+type GlobalResult struct {
+	ID      string `json:"id"`
+	Account string `json:"account,omitempty"`
+	Mailbox string `json:"mailbox,omitempty"`
+	Status  string `json:"status"`
+	Gmail   bool   `json:"gmail,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// GlobalSummary aggregates GlobalResults.
+type GlobalSummary struct {
+	Results []GlobalResult `json:"results"`
+	OK      int            `json:"ok"`
+	Missing int            `json:"missing"`
+	Failed  int            `json:"failed"`
+	Skipped int            `json:"skipped"`
+}
+
+// Err returns an error if any message was missing or failed (skips are not
+// errors: they are reported deliberately).
+func (s *GlobalSummary) Err() error {
+	if s.Missing == 0 && s.Failed == 0 {
+		return nil
+	}
+	var parts []string
+	for _, r := range s.Results {
+		switch r.Status {
+		case "missing":
+			parts = append(parts, r.ID+": not found")
+		case "failed":
+			parts = append(parts, r.ID+": "+r.Error)
+		}
+	}
+	return fmt.Errorf("%d of %d messages failed (%s)", s.Missing+s.Failed, len(s.Results), strings.Join(parts, "; "))
+}
+
+// MutateMessagesGlobal applies one action to messages identified only by
+// their Mail.app IDs. IDs are unique across the whole Mail database, so no
+// account or mailbox is needed: each message is resolved with byId and its
+// own mailbox().account() supplies the context. Messages from any mix of
+// accounts can be handled in one round trip.
+//
+// action: "read", "unread", "flag", "unflag", "delete", "move" (target is
+// the destination mailbox name within each message's own account) or
+// "archive". For archive, gmailPolicy decides what happens to messages in
+// Gmail accounts (which cannot be archived safely via scripting, see
+// ArchiveMessage): "skip" (default), "delete" (move to Trash, Gmail's own
+// delete semantics) or "read" (just mark read).
+func (c *Client) MutateMessagesGlobal(messageIDs []string, action, target, gmailPolicy string) (*GlobalSummary, error) {
+	idsJSON, _ := json.Marshal(messageIDs)
+	if gmailPolicy == "" {
+		gmailPolicy = "skip"
+	}
+	script := fmt.Sprintf(`
+const mail = Application('Mail');
+`+jsResolveMailbox+`
+const wanted = %s;
+const action = '%s';
+const target = '%s';
+const gmailPolicy = '%s';
+const results = [];
+// Any container works for byId; the unified inbox is always present.
+const container = mail.inbox().messages;
+const archiveBoxes = {};
+const isGmail = {};
+for (const id of wanted) {
+	const r = { id: id, status: 'ok' };
+	try {
+		const n = Number(id);
+		let mbox;
+		try { mbox = container.byId(n).mailbox(); r.mailbox = mbox.name(); } catch (e) { r.status = 'missing'; results.push(r); continue; }
+		// Commands like move need a specifier scoped to the message's own
+		// mailbox; a byId reference through another container is rejected.
+		const msg = mbox.messages.byId(n);
+		const acc = mbox.account();
+		const accName = acc.name();
+		r.account = accName;
+		if (isGmail[accName] === undefined) isGmail[accName] = !!resolveMailbox(acc, 'All Mail');
+		r.gmail = isGmail[accName];
+		switch (action) {
+		case 'read': msg.readStatus = true; break;
+		case 'unread': msg.readStatus = false; break;
+		case 'flag': msg.flaggedStatus = true; break;
+		case 'unflag': msg.flaggedStatus = false; break;
+		case 'delete': msg.delete(); break;
+		case 'move': {
+			const dest = resolveMailbox(acc, target);
+			if (!dest) throw 'Destination mailbox "' + target + '" not found in ' + accName;
+			mail.move(msg, { to: dest });
+			break;
+		}
+		case 'archive': {
+			if (r.gmail) {
+				if (gmailPolicy === 'delete') { msg.delete(); }
+				else if (gmailPolicy === 'read') { msg.readStatus = true; }
+				else { r.status = 'skipped'; r.error = 'Gmail accounts cannot be archived via Mail.app scripting'; }
+				break;
+			}
+			if (archiveBoxes[accName] === undefined) archiveBoxes[accName] = resolveMailbox(acc, 'Archive');
+			if (!archiveBoxes[accName]) throw 'Archive mailbox not found in ' + accName;
+			mail.move(msg, { to: archiveBoxes[accName] });
+			break;
+		}
+		default: throw 'unknown action ' + action;
+		}
+	} catch (e) {
+		r.status = 'failed'; r.error = String(e);
+	}
+	results.push(r);
+}
+JSON.stringify(results);
+`, string(idsJSON), escapeJSString(action), escapeJSString(target), escapeJSString(gmailPolicy))
+
+	output, err := c.runJXA(script)
+	if err != nil {
+		return nil, err
+	}
+	var results []GlobalResult
+	if err := json.Unmarshal([]byte(output), &results); err != nil {
+		return nil, fmt.Errorf("unexpected output: %s", output)
+	}
+	s := &GlobalSummary{Results: results}
+	for _, r := range results {
+		switch r.Status {
+		case "ok":
+			s.OK++
+		case "missing":
+			s.Missing++
+		case "failed":
+			s.Failed++
+		case "skipped":
+			s.Skipped++
+		}
+	}
+	return s, nil
+}

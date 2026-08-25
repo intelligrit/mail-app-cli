@@ -155,7 +155,33 @@ mail-app-cli messages delete <message-id> [<message-id>...] -a "Gmail" -m "INBOX
 Deleting a message that is already in Trash removes it permanently.
 
 All mutation commands accept multiple IDs and process them in a single
-Mail.app call. Each ID is reported individually: a missing ID does not stop
+Mail.app call.
+
+**Global IDs (no `--account`/`--mailbox`):** Mail.app message IDs are unique
+across all accounts, so mutations can also be run with just IDs — from any mix
+of accounts and mailboxes in one call. The output is then a JSON summary with a
+per-message status:
+
+```bash
+mail-app-cli messages archive 399357 399364 401002
+```
+
+```json
+{
+  "results": [
+    {"id": "399357", "account": "Gmail", "mailbox": "All Mail", "status": "skipped", "gmail": true,
+     "error": "Gmail accounts cannot be archived via Mail.app scripting"},
+    {"id": "399364", "account": "Exchange", "mailbox": "Inbox", "status": "ok"},
+    {"id": "401002", "status": "missing"}
+  ],
+  "ok": 1, "missing": 1, "failed": 0, "skipped": 1
+}
+```
+
+Statuses are `ok`, `missing`, `failed` (with `error`) and `skipped`. For
+`archive`, `--gmail skip|delete|read` decides what happens to Gmail messages:
+leave them and report `skipped` (default), move them to Trash, or mark them
+read. `move` resolves the target mailbox inside each message's own account. Each ID is reported individually: a missing ID does not stop
 the others, and the command exits non-zero listing the IDs that failed.
 
 > **Note:** when a message is moved (archive, move, delete) Mail.app assigns it
