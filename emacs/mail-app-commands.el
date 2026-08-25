@@ -99,6 +99,7 @@ end tell"
   "List all Mail.app accounts.
 With optional FORCE-REFRESH, bypass cache and fetch fresh data."
   (interactive "P")
+  (mail-app--check-cli-version)
   (let ((buf (get-buffer-create "*Mail.app Accounts*")))
     (with-current-buffer buf
       (mail-app-accounts-mode)
@@ -187,6 +188,7 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
   "List all Mail.app mailboxes.
 With optional FORCE-REFRESH, bypass cache and fetch fresh data."
   (interactive "P")
+  (mail-app--check-cli-version)
   (let ((buf (get-buffer-create "*Mail.app Mailboxes*")))
     (with-current-buffer buf
       (mail-app-mailboxes-mode)

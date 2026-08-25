@@ -28,6 +28,45 @@
 
 
 
+(defconst mail-app-required-cli-version "1.1.0"
+  "Minimum mail-app-cli version this package needs.
+Bump when the Elisp starts relying on new CLI behaviour.")
+
+(defvar mail-app--cli-version-checked nil
+  "Non-nil once the installed mail-app-cli version has been verified this session.")
+
+(defun mail-app--installed-cli-version ()
+  "Return the installed mail-app-cli version string, or nil if unavailable."
+  (condition-case nil
+      (with-temp-buffer
+        (when (zerop (call-process mail-app-command nil t nil "--version"))
+          (goto-char (point-min))
+          (when (re-search-forward "\\([0-9]+\\(?:\\.[0-9]+\\)+\\)" nil t)
+            (match-string 1))))
+    (error nil)))
+
+(defun mail-app--check-cli-version (&optional force)
+  "Warn once per session if the installed mail-app-cli is too old.
+Returns non-nil when the binary satisfies `mail-app-required-cli-version'.
+With FORCE, re-check even if already verified."
+  (if (and mail-app--cli-version-checked (not force))
+      (eq mail-app--cli-version-checked 'ok)
+    (let* ((installed (mail-app--installed-cli-version))
+           (ok (and installed (version<= mail-app-required-cli-version installed))))
+      (setq mail-app--cli-version-checked (if ok 'ok 'old))
+      (unless ok
+        (let ((msg (if installed
+                       (format "mail-app-cli %s is older than the %s this package needs; run `make install' in the mail-app-cli repo"
+                               installed mail-app-required-cli-version)
+                     (format "mail-app-cli not found or does not report a version (`%s --version'); expected %s or newer"
+                             mail-app-command mail-app-required-cli-version))))
+          (display-warning 'mail-app msg :warning)
+          (when (fboundp 'mail-app--speak)
+            (mail-app--speak msg 'warn-user))))
+      ok)))
+
+
+
 (defcustom mail-app-default-account nil
   "Default Mail.app account to use.
 If nil, you will be prompted to select one when needed."

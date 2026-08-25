@@ -205,6 +205,16 @@ Available customization options:
 
 ## Troubleshooting
 
+### "mail-app-cli X is older than ..." warning
+
+The Elisp and the CLI evolve together. When the installed binary is older
+than `mail-app-required-cli-version`, the first `mail-app-list-accounts` /
+`mail-app-list-mailboxes` of the session warns. Rebuild and install the CLI:
+
+```bash
+cd ~/projects/intelligrit/mail-app-cli && make install
+```
+
 ### mail-app-cli not found
 
 If you get an error about mail-app-cli not being found:
