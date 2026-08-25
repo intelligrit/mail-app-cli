@@ -366,9 +366,7 @@ Uses the faster unified inbox API from Mail.app."
            (args (list "messages" "inbox"
                        "-l" (number-to-string limit)
                        "-o" "0"))
-           (args (if mail-app-read-message-content
-                     (append args '("--with-content"))
-                   args))
+           (args (append args (mail-app--content-args)))
            (args (if mail-app-show-only-unread
                      (append args '("-u"))
                    args)))
@@ -405,9 +403,7 @@ Uses the faster unified inbox with unread filter from Mail.app."
            (args (list "messages" "unread"
                        "-l" (number-to-string limit)
                        "-o" "0"))
-           (args (if mail-app-read-message-content
-                     (append args '("--with-content"))
-                   args)))
+           (args (append args (mail-app--content-args))))
       (apply 'mail-app--run-command-async
              (lambda (output)
                (let ((messages (mail-app--parse-messages-output output)))
@@ -441,9 +437,7 @@ Uses the faster unified sent mailbox from Mail.app."
            (args (list "messages" "sent"
                        "-l" (number-to-string limit)
                        "-o" "0"))
-           (args (if mail-app-read-message-content
-                     (append args '("--with-content"))
-                   args)))
+           (args (append args (mail-app--content-args))))
       (apply 'mail-app--run-command-async
              (lambda (output)
                (let ((messages (mail-app--parse-messages-output output)))
@@ -477,9 +471,7 @@ Uses the faster unified drafts mailbox from Mail.app."
            (args (list "messages" "drafts"
                        "-l" (number-to-string limit)
                        "-o" "0"))
-           (args (if mail-app-read-message-content
-                     (append args '("--with-content"))
-                   args)))
+           (args (append args (mail-app--content-args))))
       (apply 'mail-app--run-command-async
              (lambda (output)
                (let ((messages (mail-app--parse-messages-output output)))
@@ -513,9 +505,7 @@ Uses the faster unified inbox with flagged filter from Mail.app."
            (args (list "messages" "flagged"
                        "-l" (number-to-string limit)
                        "-o" "0"))
-           (args (if mail-app-read-message-content
-                     (append args '("--with-content"))
-                   args)))
+           (args (append args (mail-app--content-args))))
       (apply 'mail-app--run-command-async
              (lambda (output)
                (let ((messages (mail-app--parse-messages-output output)))
@@ -549,9 +539,7 @@ Uses the faster unified trash mailbox from Mail.app."
            (args (list "messages" "trash"
                        "-l" (number-to-string limit)
                        "-o" "0"))
-           (args (if mail-app-read-message-content
-                     (append args '("--with-content"))
-                   args)))
+           (args (append args (mail-app--content-args))))
       (apply 'mail-app--run-command-async
              (lambda (output)
                (let ((messages (mail-app--parse-messages-output output)))
@@ -585,9 +573,7 @@ Uses the faster unified junk mailbox from Mail.app."
            (args (list "messages" "junk"
                        "-l" (number-to-string limit)
                        "-o" "0"))
-           (args (if mail-app-read-message-content
-                     (append args '("--with-content"))
-                   args)))
+           (args (append args (mail-app--content-args))))
       (apply 'mail-app--run-command-async
              (lambda (output)
                (let ((messages (mail-app--parse-messages-output output)))
@@ -614,9 +600,7 @@ Uses the faster unified junk mailbox from Mail.app."
          (args (list "messages" "list" "-a" account "-m" mailbox
                      "-l" (number-to-string limit)
                      "-o" "0"))
-         (args (if mail-app-read-message-content
-                   (append args '("--with-content"))
-                 args))
+         (args (append args (mail-app--content-args mailbox)))
          (args (if mail-app-show-only-unread
                    (append args '("-u"))
                  args))
@@ -677,9 +661,7 @@ Uses the faster unified junk mailbox from Mail.app."
                            "-m" mail-app-current-mailbox
                            "-l" (number-to-string page-size)
                            "-o" (number-to-string new-offset)))))
-           (args (if mail-app-read-message-content
-                     (append args '("--with-content"))
-                   args))
+           (args (append args (mail-app--content-args)))
            (args (if (and mail-app-show-only-unread (not cmd))
                      (append args '("-u"))
                    args))

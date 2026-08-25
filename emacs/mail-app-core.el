@@ -46,6 +46,18 @@ across all accounts), so they are off by default."
 
 
 
+(defcustom mail-app-no-content-mailbox-regexp
+  "\\`\\(?:trash\\|deleted items\\|deleted messages\\|spam\\|junk\\(?: e-?mail\\)?\\|bulk mail\\)\\'"
+  "Mailboxes whose bodies are never fetched, even with content reading on.
+Matched case-insensitively against the mailbox name.  Fetching bodies in
+trash/junk is what most often wedges Mail.app's scripting interface (the
+body is rarely cached locally and the download can stall), and reading
+spam aloud is rarely useful anyway."
+  :type 'regexp
+  :group 'mail-app)
+
+
+
 (defcustom mail-app-message-limit 15
   "Minimum number of messages to fetch.  The actual fetch count is computed
 dynamically from the window height; this value is the floor."
@@ -423,6 +435,21 @@ Returns the signature text or nil if none is configured."
      ((stringp sig-config)
       sig-config)
      (t nil))))
+
+
+
+(defun mail-app--content-args (&optional mailbox)
+  "Return the `--with-content' argument list for the current view, or nil.
+Content is requested only when `mail-app-read-message-content' is non-nil
+and the view is not trash or junk: either the unified `trash'/`junk' view
+(`mail-app-unified-view') or a MAILBOX (default `mail-app-current-mailbox')
+matching `mail-app-no-content-mailbox-regexp'."
+  (let ((name (or mailbox mail-app-current-mailbox))
+        (case-fold-search t))
+    (when (and mail-app-read-message-content
+               (not (memq mail-app-unified-view '(trash junk)))
+               (not (and name (string-match-p mail-app-no-content-mailbox-regexp name))))
+      '("--with-content"))))
 
 
 
