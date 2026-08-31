@@ -609,13 +609,20 @@ Uses the faster unified junk mailbox from Mail.app."
       (setq mail-app-current-mailbox mailbox))
     (mail-app--run-command-async
      (lambda (output)
-       (with-current-buffer buf
-         (let* ((messages (mail-app--parse-messages-output output))
-                (threads (mail-app--build-threads messages))
-                (summaries (mail-app--thread-summaries threads)))
-           (setq mail-app-threads-data summaries)
-           (mail-app--format-thread-list summaries)
-           (mail-app--speak (format "%d threads" (length summaries)) 'select-object))))
+       (condition-case err
+           (with-current-buffer buf
+             (let* ((messages (mail-app--parse-messages-output output))
+                    (threads (mail-app--build-threads messages))
+                    (summaries (mail-app--thread-summaries threads)))
+               (setq mail-app-threads-data summaries)
+               (mail-app--format-thread-list summaries)
+               (mail-app--speak (format "%d threads" (length summaries)) 'select-object)))
+         (error
+          (message "Mail-app thread list error: %s" err)
+          (with-current-buffer buf
+            (let ((inhibit-read-only t))
+              (erase-buffer)
+              (insert (format "Error loading threads: %s\n" err)))))))
      "messages" "list" "-a" account "-m" mailbox
      "-l" (number-to-string limit)
      "-o" "0"
