@@ -964,7 +964,7 @@ each message. When disabled, only subject and sender are read."
 
 
 (defun mail-app-sort-messages ()
-  "Cycle through message sort options: date, subject, from, unread."
+  "Cycle through message sort options: date, subject, from, unread, thread."
   (interactive)
   (unless mail-app-messages-data
     (error "No messages to sort"))
@@ -973,7 +973,8 @@ each message. When disabled, only subject and sender are read."
                  ('date 'subject)
                  ('subject 'from)
                  ('from 'unread)
-                 ('unread 'date)
+                 ('unread 'thread)
+                 ('thread 'date)
                  ('read 'date) ; backwards compatibility
                  (_ 'date))))
     (setq mail-app-message-sort-key next)

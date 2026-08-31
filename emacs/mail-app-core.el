@@ -28,7 +28,7 @@
 
 
 
-(defconst mail-app-required-cli-version "1.1.0"
+(defconst mail-app-required-cli-version "1.2.0"
   "Minimum mail-app-cli version this package needs.
 Bump when the Elisp starts relying on new CLI behaviour.")
 
@@ -754,31 +754,99 @@ Returns nil if OUTPUT is not parseable."
 
 
 (defun mail-app--sort-messages (messages sort-key reverse)
-  "Sort MESSAGES by SORT-KEY. Reverse if REVERSE is non-nil."
-  (let ((sorted (sort (copy-sequence messages)
-                     (lambda (a b)
-                       (let ((val-a (pcase sort-key
-                                     ('date (plist-get a :date))
-                                     ('subject (downcase (or (plist-get a :subject) "")))
-                                     ('from (downcase (or (plist-get a :from) "")))
-                                     ('unread (if (plist-get a :read) "1" "0"))
-                                     ('read (if (plist-get a :read) "1" "0")) ; backwards compatibility
-                                     (_ (plist-get a :date))))
-                             (val-b (pcase sort-key
-                                     ('date (plist-get b :date))
-                                     ('subject (downcase (or (plist-get b :subject) "")))
-                                     ('from (downcase (or (plist-get b :from) "")))
-                                     ('unread (if (plist-get b :read) "1" "0"))
-                                     ('read (if (plist-get b :read) "1" "0")) ; backwards compatibility
-                                     (_ (plist-get b :date)))))
-                         (if (memq sort-key '(unread read))
-                             (string< val-a val-b)
-                           (string< (format "%s" val-a) (format "%s" val-b))))))))
-    (if reverse (nreverse sorted) sorted)))
+  "Sort MESSAGES by SORT-KEY. Reverse if REVERSE is non-nil.
+For 'thread, returns threaded and flattened messages; for other keys, sorts linearly."
+  (if (eq sort-key 'thread)
+      ;; Thread view: group by Message-ID/In-Reply-To/References, flatten for display
+      (mail-app--flatten-threads (mail-app--build-threads messages))
+    ;; Linear sorts
+    (let ((sorted (sort (copy-sequence messages)
+                       (lambda (a b)
+                         (let ((val-a (pcase sort-key
+                                       ('date (plist-get a :date))
+                                       ('subject (downcase (or (plist-get a :subject) "")))
+                                       ('from (downcase (or (plist-get a :from) "")))
+                                       ('unread (if (plist-get a :read) "1" "0"))
+                                       ('read (if (plist-get a :read) "1" "0")) ; backwards compatibility
+                                       (_ (plist-get a :date))))
+                               (val-b (pcase sort-key
+                                       ('date (plist-get b :date))
+                                       ('subject (downcase (or (plist-get b :subject) "")))
+                                       ('from (downcase (or (plist-get b :from) "")))
+                                       ('unread (if (plist-get b :read) "1" "0"))
+                                       ('read (if (plist-get b :read) "1" "0")) ; backwards compatibility
+                                       (_ (plist-get b :date)))))
+                           (if (memq sort-key '(unread read))
+                               (string< val-a val-b)
+                             (string< (format "%s" val-a) (format "%s" val-b))))))))
+      (if reverse (nreverse sorted) sorted))))
+
+
+(defun mail-app--build-threads (messages)
+  "Build a threaded view of MESSAGES using Message-ID/In-Reply-To/References.
+Returns a list where each element is either a single message or
+a cons (root . children) representing a thread tree.
+Messages without threading headers are grouped with others by subject."
+  (let ((by-id (make-hash-table :test 'equal))
+        (by-subject (make-hash-table :test 'equal))
+        (roots '())
+        (visited (make-hash-table :test 'equal)))
+    ;; Index all messages by Message-ID
+    (dolist (msg messages)
+      (let ((msg-id (plist-get msg :message-id)))
+        (when msg-id
+          (puthash msg-id msg by-id))))
+    ;; Build parent-child relationships
+    (let ((threads (make-hash-table :test 'equal)))
+      (dolist (msg messages)
+        (let* ((in-reply-to (plist-get msg :in-reply-to))
+               (parent-id (and in-reply-to
+                              (substring in-reply-to 1 -1)))) ; strip < >
+          (if (and parent-id (gethash parent-id by-id))
+              ;; Message has a known parent
+              (let ((parent-thread (gethash parent-id threads)))
+                (if parent-thread
+                    (nconc parent-thread (list msg))
+                  (puthash (plist-get msg :id) (list msg) threads)))
+            ;; No parent or parent not found: treat as potential root
+            (unless (gethash (plist-get msg :id) threads)
+              (puthash (plist-get msg :id) (list msg) threads)))))
+      ;; Identify actual roots (messages with no parent in our set)
+      (dolist (msg messages)
+        (let* ((in-reply-to (plist-get msg :in-reply-to))
+               (parent-id (and in-reply-to
+                              (substring in-reply-to 1 -1)))
+               (msg-id (plist-get msg :id)))
+          (when (or (not in-reply-to)
+                   (not (gethash parent-id by-id)))
+            (unless (gethash msg-id visited)
+              (puthash msg-id t visited)
+              (let ((thread (gethash msg-id threads)))
+                (if (and thread (> (length thread) 1))
+                    (push thread roots)
+                  (push msg roots)))))))
+      (nreverse roots))))
+
+
+(defun mail-app--flatten-threads (threads)
+  "Flatten threaded view THREADS back into a message list, with indentation hints.
+Each message plist gains an :indent and :thread-marker key for display."
+  (let ((result '()))
+    (dolist (thread threads)
+      (cond
+       ((listp thread)
+        ;; Thread: root message + children
+        (let ((root (car thread)))
+          (push (append root (list :indent 0 :thread-marker nil)) result)
+          (dolist (child (cdr thread))
+            (push (append child (list :indent 1 :thread-marker "→")) result))))
+       (t
+        ;; Single message, no thread
+        (push (append thread (list :indent 0 :thread-marker nil)) result))))
+    (nreverse result)))
 
 
 
-(defun mail-app--parse-attachments-output (output)
   "Parse attachments list OUTPUT (JSON) into a list of plists."
   (condition-case err
       (let* ((json-array (json-parse-string output :object-type 'alist :array-type 'list))
