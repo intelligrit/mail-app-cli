@@ -22,6 +22,7 @@ var (
 	msgUnread        bool
 	msgFlaggedFilter bool
 	msgWithContent   bool
+	msgWithHeaders   bool
 	msgRead          bool
 	msgFlaggedSet    bool
 	msgSince         string
@@ -73,13 +74,14 @@ var messagesListCmd = &cobra.Command{
 
 		// Build a cache key that encodes all query parameters so different queries
 		// get separate cache entries.
-		cacheKey := fmt.Sprintf("msgs-%s-%s-%d-%d-%v-%v-%s-%v",
+		cacheKey := fmt.Sprintf("msgs-%s-%s-%d-%d-%v-%v-%s-%v-%v",
 			sanitizeCacheKey(msgAccount),
 			sanitizeCacheKey(msgMailbox),
 			msgLimit, msgOffset,
 			msgUnread, msgFlaggedFilter,
 			sanitizeCacheKey(msgSince),
 			msgWithContent,
+			msgWithHeaders,
 		)
 
 		// Try cache first (skip if content requested — content is per-user and typically large)
@@ -101,7 +103,7 @@ var messagesListCmd = &cobra.Command{
 		}
 
 		client := mail.NewClient()
-		messages, err := client.GetMessagesJSON(msgAccount, msgMailbox, msgLimit, msgOffset, msgUnread, msgFlaggedFilter, msgWithContent, msgSince)
+		messages, err := client.GetMessagesJSON(msgAccount, msgMailbox, msgLimit, msgOffset, msgUnread, msgFlaggedFilter, msgWithContent, msgWithHeaders, msgSince)
 		if err != nil {
 			return fmt.Errorf("failed to get messages: %w", err)
 		}
@@ -352,7 +354,7 @@ func newUnifiedCmd(use, short, mailboxType string) *cobra.Command {
 		Short: short,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client := mail.NewClient()
-			messages, err := client.GetUnifiedMessagesJSON(mailboxType, msgLimit, msgOffset, msgWithContent)
+			messages, err := client.GetUnifiedMessagesJSON(mailboxType, msgLimit, msgOffset, msgWithContent, msgWithHeaders)
 			if err != nil {
 				return fmt.Errorf("failed to get %s messages: %w", mailboxType, err)
 			}
@@ -438,6 +440,7 @@ func init() {
 	messagesListCmd.Flags().BoolVarP(&msgUnread, "unread", "u", false, "Show only unread messages")
 	messagesListCmd.Flags().BoolVarP(&msgFlaggedFilter, "flagged", "f", false, "Show only flagged messages")
 	messagesListCmd.Flags().BoolVar(&msgWithContent, "with-content", false, "Include message content (slower but better for accessibility)")
+	messagesListCmd.Flags().BoolVar(&msgWithHeaders, "with-headers", false, "Include InReplyTo/References for threading (slower)")
 	messagesListCmd.Flags().StringVarP(&msgSince, "since", "s", "", "Show messages since date (format: YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)")
 	messagesListCmd.Flags().BoolVar(&msgNoCache, "no-cache", false, "Bypass cache and fetch fresh data")
 	messagesListCmd.Flags().BoolVar(&msgForceRefresh, "force-refresh", false, "Force refresh cache with fresh data")
@@ -456,5 +459,6 @@ func init() {
 		cmd.Flags().IntVarP(&msgLimit, "limit", "l", 25, "Maximum number of messages to return")
 		cmd.Flags().IntVarP(&msgOffset, "offset", "o", 0, "Number of messages to skip (pagination)")
 		cmd.Flags().BoolVar(&msgWithContent, "with-content", false, "Include message content")
+		cmd.Flags().BoolVar(&msgWithHeaders, "with-headers", false, "Include InReplyTo/References for threading (slower)")
 	}
 }

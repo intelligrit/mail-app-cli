@@ -101,6 +101,19 @@ mail-app-cli messages list -a "Gmail" -m "INBOX" --unread --since "2025-12-01" -
 > scripting interface if a body is not cached locally (see PERFORMANCE.md).
 > Use it on small, recently synced mailboxes, not from unattended jobs.
 
+Every message includes `MessageID` (the RFC 5322 `Message-ID` header) for
+free. Add `--with-headers` to `list` and the unified subcommands to also get
+`InReplyTo` and `References`, parsed from the message's raw headers, for
+building a threaded view; it is opt-in because bulk-fetching headers is
+roughly 9x slower than the other list fields:
+
+```bash
+mail-app-cli messages list -a "Gmail" -m "INBOX" --with-headers
+```
+
+`messages show` always includes `InReplyTo`/`References` (it already pays
+the cost of a single-message fetch for `Content`).
+
 Show full message details:
 
 ```bash
@@ -467,7 +480,6 @@ Future enhancements:
 - VIP contacts
 - Export/import functionality
 - IMAP folder synchronization
-- Message threading support
 - Draft management
 
 ## Contributing

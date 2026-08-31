@@ -87,6 +87,7 @@ type Mailbox struct {
 // Message represents an email message
 type Message struct {
 	ID            string
+	MessageID     string
 	Subject       string
 	Sender        string
 	DateSent      string
@@ -101,6 +102,8 @@ type Message struct {
 	ToRecipients  []string
 	CcRecipients  []string
 	BccRecipients []string
+	InReplyTo     string   `json:",omitempty"`
+	References    []string `json:",omitempty"`
 }
 
 // Attachment represents an email attachment
@@ -148,6 +151,24 @@ function resolveMessage(mbox, id) {
 	if (!isFinite(n)) return null;
 	const m = mbox.messages.byId(n);
 	try { m.id(); return m; } catch (e) { return null; }
+}
+`
+
+// jsParseThreadHeaders extracts In-Reply-To and References from a raw
+// "all headers" string. Both headers can fold across lines (RFC 5322
+// continuation lines start with whitespace), so each is matched up to the
+// next non-indented header line rather than to end-of-line.
+const jsParseThreadHeaders = `
+function parseThreadHeaders(headers) {
+	function field(name) {
+		const m = headers.match(new RegExp('^' + name + ':([^\\n]*(?:\\n[ \\t]+[^\\n]*)*)', 'im'));
+		return m ? m[1].replace(/\s+/g, ' ').trim() : '';
+	}
+	const inReplyToRaw = field('In-Reply-To');
+	const referencesRaw = field('References');
+	const inReplyTo = (inReplyToRaw.match(/<[^>]+>/) || [''])[0];
+	const references = referencesRaw.match(/<[^>]+>/g) || [];
+	return { inReplyTo: inReplyTo, references: references };
 }
 `
 
@@ -622,7 +643,7 @@ JSON.stringify(result);
 }
 
 // GetMessagesJSON retrieves messages from a mailbox using JXA
-func (c *Client) GetMessagesJSON(accountName, mailboxName string, limit, offset int, unreadOnly, flaggedOnly, withContent bool, since string) ([]Message, error) {
+func (c *Client) GetMessagesJSON(accountName, mailboxName string, limit, offset int, unreadOnly, flaggedOnly, withContent, withHeaders bool, since string) ([]Message, error) {
 	// Filters operate on an index array using bulk property accessors
 	// (M.readStatus() is one IPC call for the whole mailbox).
 	unreadFilter := ""
@@ -657,10 +678,20 @@ func (c *Client) GetMessagesJSON(accountName, mailboxName string, limit, offset 
 		contentField = "content: M.byId(cols.id[i]).content() || '',"
 	}
 
+	// allHeaders is a large string and ~9x slower to bulk-fetch than the
+	// other scalar props, so it is only added to PROPS (and thus fetched at
+	// all) when explicitly requested.
+	headerProp := ""
+	headerFields := "inReplyTo: '', references: [],"
+	if withHeaders {
+		headerProp = ", 'allHeaders'"
+		headerFields = "inReplyTo: parseThreadHeaders(get(i, 'allHeaders') || '').inReplyTo, references: parseThreadHeaders(get(i, 'allHeaders') || '').references,"
+	}
+
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 const result = [];
-`+jsResolveMailbox+`
+`+jsResolveMailbox+jsParseThreadHeaders+`
 try {
 	const acc = mail.accounts.byName('%s');
 	const mbox = resolveMailbox(acc, '%s');
@@ -681,7 +712,7 @@ try {
 	// of one property over the whole mailbox costs ~35us per message. So
 	// bulk-fetch everything when the mailbox is small relative to the page,
 	// otherwise read per-message for just the page.
-	const PROPS = ['id', 'subject', 'sender', 'dateReceived', 'dateSent', 'readStatus', 'flaggedStatus', 'deletedStatus'];
+	const PROPS = ['id', 'subject', 'sender', 'dateReceived', 'dateSent', 'readStatus', 'flaggedStatus', 'deletedStatus', 'messageId'%s];
 	// Index specifiers (M.at(i)) re-enumerate the mailbox on every access,
 	// so the per-message path resolves by id instead (ids are cheap in bulk).
 	const useBulk = total <= Math.max(2000, indices.length * 300);
@@ -705,6 +736,7 @@ try {
 			if (get(i, 'deletedStatus')) continue;
 			result.push({
 				id: String(get(i, 'id')),
+				messageId: get(i, 'messageId') || '',
 				subject: get(i, 'subject') || '',
 				sender: get(i, 'sender') || '',
 				dateReceived: (get(i, 'dateReceived') || new Date()).toISOString(),
@@ -712,6 +744,7 @@ try {
 				read: get(i, 'readStatus'),
 				flagged: get(i, 'flaggedStatus'),
 				messageSize: 0,
+				%s
 				%s
 				mailbox: mboxName,
 				account: accName
@@ -726,7 +759,8 @@ try {
 
 JSON.stringify(result);
 `, escapeJSString(accountName), escapeJSString(mailboxName),
-		unreadFilter, flaggedFilter, sinceFilter, offsetClause, limitClause, contentField)
+		unreadFilter, flaggedFilter, sinceFilter, offsetClause, limitClause,
+		headerProp, contentField, headerFields)
 
 	output, err := c.runJXA(script)
 	if err != nil {
@@ -746,7 +780,7 @@ func (c *Client) GetMessageDetailsJSON(accountName, mailboxName, messageID strin
 	script := fmt.Sprintf(`
 const mail = Application('Mail');
 let result = null;
-`+jsResolveMailbox+`
+`+jsResolveMailbox+jsParseThreadHeaders+`
 try {
 	const acc = mail.accounts.byName('%s');
 	const mbox = resolveMailbox(acc, '%s');
@@ -772,8 +806,11 @@ try {
 			bccRecipients.push(bccRecs[b].address());
 		}
 
+		const threadHeaders = parseThreadHeaders(msg.allHeaders() || '');
+
 		result = {
 			id: String(msg.id()),
+			messageId: msg.messageId() || '',
 			subject: msg.subject() || '',
 			sender: msg.sender() || '',
 			dateReceived: (msg.dateReceived() || new Date()).toISOString(),
@@ -786,7 +823,9 @@ try {
 			account: acc.name(),
 			toRecipients: toRecipients,
 			ccRecipients: ccRecipients,
-			bccRecipients: bccRecipients
+			bccRecipients: bccRecipients,
+			inReplyTo: threadHeaders.inReplyTo,
+			references: threadHeaders.references
 		};
 	}
 } catch (e) {
@@ -1053,6 +1092,7 @@ try {
 			if (subject.includes(searchTerm) || sender.includes(searchTerm)) {
 				result.push({
 					id: String(msg.id()),
+					messageId: msg.messageId() || '',
 					subject: msg.subject() || '',
 					sender: msg.sender() || '',
 					dateReceived: (msg.dateReceived() || new Date()).toISOString(),
@@ -1097,6 +1137,7 @@ func (c *Client) GetMessagesFromMultipleMailboxes(requests []struct {
 	UnreadOnly  bool
 	FlaggedOnly bool
 	WithContent bool
+	WithHeaders bool
 	Since       string
 }) ([]Message, error) {
 	if len(requests) == 0 {
@@ -1106,7 +1147,7 @@ func (c *Client) GetMessagesFromMultipleMailboxes(requests []struct {
 	// If only one request, no need for parallelization
 	if len(requests) == 1 {
 		req := requests[0]
-		return c.GetMessagesJSON(req.AccountName, req.MailboxName, req.Limit, req.Offset, req.UnreadOnly, req.FlaggedOnly, req.WithContent, req.Since)
+		return c.GetMessagesJSON(req.AccountName, req.MailboxName, req.Limit, req.Offset, req.UnreadOnly, req.FlaggedOnly, req.WithContent, req.WithHeaders, req.Since)
 	}
 
 	// Load messages from multiple mailboxes in parallel
@@ -1126,9 +1167,10 @@ func (c *Client) GetMessagesFromMultipleMailboxes(requests []struct {
 			UnreadOnly  bool
 			FlaggedOnly bool
 			WithContent bool
+			WithHeaders bool
 			Since       string
 		}) {
-			messages, err := c.GetMessagesJSON(r.AccountName, r.MailboxName, r.Limit, r.Offset, r.UnreadOnly, r.FlaggedOnly, r.WithContent, r.Since)
+			messages, err := c.GetMessagesJSON(r.AccountName, r.MailboxName, r.Limit, r.Offset, r.UnreadOnly, r.FlaggedOnly, r.WithContent, r.WithHeaders, r.Since)
 			results <- result{messages: messages, err: err}
 		}(req)
 	}
@@ -1423,12 +1465,12 @@ func (c *Client) BulkArchiveMessages(requests []struct {
 //
 // sent/drafts/trash/junk use Mail.app's JXA special-mailbox accessors
 // (mail.sentMailboxes() etc.) which don't require per-message filtering.
-func (c *Client) GetUnifiedMessagesJSON(mailboxType string, limit, offset int, withContent bool) ([]Message, error) {
+func (c *Client) GetUnifiedMessagesJSON(mailboxType string, limit, offset int, withContent, withHeaders bool) ([]Message, error) {
 	switch mailboxType {
 	case "inbox", "unread", "flagged":
-		return c.getInboxBasedUnified(mailboxType, limit, offset, withContent)
+		return c.getInboxBasedUnified(mailboxType, limit, offset, withContent, withHeaders)
 	case "sent", "drafts", "trash", "junk":
-		return c.getSpecialMailboxUnified(mailboxType, limit, offset, withContent)
+		return c.getSpecialMailboxUnified(mailboxType, limit, offset, withContent, withHeaders)
 	default:
 		return nil, fmt.Errorf("unknown unified mailbox type: %s", mailboxType)
 	}
@@ -1436,7 +1478,7 @@ func (c *Client) GetUnifiedMessagesJSON(mailboxType string, limit, offset int, w
 
 // getInboxBasedUnified fetches messages from each account's INBOX using the
 // proven GetMessagesJSON path, then merges, sorts, and slices globally.
-func (c *Client) getInboxBasedUnified(mailboxType string, limit, offset int, withContent bool) ([]Message, error) {
+func (c *Client) getInboxBasedUnified(mailboxType string, limit, offset int, withContent, withHeaders bool) ([]Message, error) {
 	// Resolve each account's real inbox name ("INBOX" vs "Inbox") via Mail's
 	// unified inbox rather than assuming a name.
 	refs, err := c.GetSpecialMailboxRefs("inbox")
@@ -1458,6 +1500,7 @@ func (c *Client) getInboxBasedUnified(mailboxType string, limit, offset int, wit
 		UnreadOnly  bool
 		FlaggedOnly bool
 		WithContent bool
+		WithHeaders bool
 		Since       string
 	}
 
@@ -1471,6 +1514,7 @@ func (c *Client) getInboxBasedUnified(mailboxType string, limit, offset int, wit
 			UnreadOnly:  mailboxType == "unread",
 			FlaggedOnly: mailboxType == "flagged",
 			WithContent: withContent,
+			WithHeaders: withHeaders,
 		})
 	}
 
@@ -1531,7 +1575,7 @@ JSON.stringify(result);
 // getSpecialMailboxUnified lists a unified special mailbox by resolving the
 // per-account boxes and fetching each concurrently through GetMessagesJSON
 // (the bulk/byId fast path), then merging, sorting and slicing globally.
-func (c *Client) getSpecialMailboxUnified(mailboxType string, limit, offset int, withContent bool) ([]Message, error) {
+func (c *Client) getSpecialMailboxUnified(mailboxType string, limit, offset int, withContent, withHeaders bool) ([]Message, error) {
 	refs, err := c.GetSpecialMailboxRefs(mailboxType)
 	if err != nil {
 		return nil, err
@@ -1553,6 +1597,7 @@ func (c *Client) getSpecialMailboxUnified(mailboxType string, limit, offset int,
 		UnreadOnly  bool
 		FlaggedOnly bool
 		WithContent bool
+		WithHeaders bool
 		Since       string
 	}
 	for _, r := range refs {
@@ -1564,8 +1609,9 @@ func (c *Client) getSpecialMailboxUnified(mailboxType string, limit, offset int,
 			UnreadOnly  bool
 			FlaggedOnly bool
 			WithContent bool
+			WithHeaders bool
 			Since       string
-		}{AccountName: r.Account, MailboxName: r.Mailbox, Limit: perLimit, WithContent: withContent})
+		}{AccountName: r.Account, MailboxName: r.Mailbox, Limit: perLimit, WithContent: withContent, WithHeaders: withHeaders})
 	}
 
 	messages, err := c.GetMessagesFromMultipleMailboxes(requests)
