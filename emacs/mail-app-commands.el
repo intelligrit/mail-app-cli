@@ -744,7 +744,9 @@ Uses the faster unified junk mailbox from Mail.app."
         (if (= (length all-msgs) 1)
             ;; Single message thread - skip to message view
             (let ((msg (car all-msgs)))
-              (mail-app-view-message msg))
+              (mail-app-view-message (plist-get msg :id)
+                                     mail-app-current-account
+                                     mail-app-current-mailbox))
           ;; Multi-message thread - show thread view
           (mail-app-show-thread-view thread-data))))))
 
