@@ -181,6 +181,17 @@
       "d" 'mail-app-delete-thread-at-point
       "a" 'mail-app-archive-thread-at-point
       "t" 'mail-app-mark-thread-at-point
+      ;; Marking for bulk operations
+      "m" 'mail-app-toggle-thread-mark-at-point
+      "M" 'mail-app-toggle-thread-mark-backward
+      "U" 'mail-app-unmark-all
+      "x" 'mail-app-delete-marked-threads
+      ",a" 'mail-app-archive-marked-threads
+      ",f" 'mail-app-flag-marked-threads
+      ",j" 'mail-app-junk-marked-threads
+      ",v" 'mail-app-move-marked-threads
+      ",r" 'mail-app-mark-marked-threads-as-read
+      ",u" 'mail-app-mark-marked-threads-as-unread
       "q" 'quit-window
       "ZZ" 'quit-window
       "ZQ" 'quit-window

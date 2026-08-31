@@ -225,14 +225,18 @@ Falls back to `mail-app--insert-plain' otherwise."
              (count (plist-get summary :message-count))
              (subject (plist-get root :subject))
              (from (plist-get summary :latest-sender))
+             (marked (member (plist-get summary :thread-id)
+                             mail-app-marked-messages))
+             (mark-str (if marked ">" " "))
              (unread-marker (if unread "●" " "))
              (line (format "%-2s %-3s %-45s %-30s %8d\n"
-                           " "
+                           mark-str
                            unread-marker
                            (truncate-string-to-width subject 45 nil nil "...")
                            (truncate-string-to-width from 30 nil nil "...")
                            count))
-             (speech-text (format "%s thread%s, %d messages, from %s"
+             (speech-text (format "%s%s thread%s, %d messages, from %s"
+                                 (if marked "Marked. " "")
                                  subject
                                  (if unread " unread" "")
                                  count
@@ -241,8 +245,11 @@ Falls back to `mail-app--insert-plain' otherwise."
         (insert line)
         (put-text-property start (point) 'mail-app-thread-data summary)
         (put-text-property start (point) 'emacspeak-speak speech-text)
-        (when unread
-          (put-text-property start (point) 'face 'bold))))
+        (cond
+         (marked
+          (put-text-property start (point) 'face 'highlight))
+         (unread
+          (put-text-property start (point) 'face 'bold)))))
     (goto-char (point-min))
     (forward-line 4)))
 

@@ -952,6 +952,120 @@ Marks the chosen messages read if any is unread; otherwise unread."
                                          "--read=false"))))))))
 
 
+(defun mail-app-toggle-thread-mark-at-point ()
+  "Toggle mark on the thread at point for bulk operations, then advance."
+  (interactive)
+  (let* ((thread (get-text-property (point) 'mail-app-thread-data))
+         (tid (and thread (plist-get thread :thread-id))))
+    (if (not tid)
+        (message "No thread at point")
+      (let ((current-line (line-number-at-pos)))
+        (if (member tid mail-app-marked-messages)
+            (progn
+              (setq mail-app-marked-messages
+                    (delete tid mail-app-marked-messages))
+              (mail-app--speak "Unmarked" 'delete-object))
+          (push tid mail-app-marked-messages)
+          (mail-app--speak "Marked" 'mark-object))
+        (when mail-app-threads-data
+          (mail-app--format-thread-list mail-app-threads-data)
+          (goto-char (point-min))
+          (forward-line current-line))))))
+
+
+(defun mail-app-toggle-thread-mark-backward ()
+  "Toggle mark on the thread at point, then move backward."
+  (interactive)
+  (let* ((thread (get-text-property (point) 'mail-app-thread-data))
+         (tid (and thread (plist-get thread :thread-id))))
+    (if (not tid)
+        (message "No thread at point")
+      (let ((current-line (line-number-at-pos)))
+        (if (member tid mail-app-marked-messages)
+            (progn
+              (setq mail-app-marked-messages
+                    (delete tid mail-app-marked-messages))
+              (mail-app--speak "Unmarked" 'delete-object))
+          (push tid mail-app-marked-messages)
+          (mail-app--speak "Marked" 'mark-object))
+        (when mail-app-threads-data
+          (mail-app--format-thread-list mail-app-threads-data)
+          (goto-char (point-min))
+          (forward-line (max 0 (- current-line 2))))))))
+
+
+(defun mail-app--act-on-marked-threads (label verb-past confirm &rest args)
+  "Apply one mutation to every message of the marked threads.
+LABEL/VERB-PAST/CONFIRM/ARGS as in `mail-app--act-on-messages'."
+  (let* ((marked-summaries
+          (seq-filter (lambda (s)
+                        (member (plist-get s :thread-id)
+                                mail-app-marked-messages))
+                      mail-app-threads-data))
+         (msgs (apply #'append
+                      (mapcar (lambda (s) (plist-get s :all-messages))
+                              marked-summaries))))
+    (if (null msgs)
+        (message "No threads marked")
+      (when (or (not confirm)
+                (yes-or-no-p (format "%s %d messages in %d threads? "
+                                     label (length msgs)
+                                     (length marked-summaries))))
+        (setq mail-app-marked-messages nil)
+        (apply #'mail-app--act-on-messages msgs label verb-past nil args)))))
+
+
+(defun mail-app-delete-marked-threads ()
+  "Delete every message of the marked threads (with confirmation)."
+  (interactive)
+  (mail-app--act-on-marked-threads "Delete" "Deleted" t "messages" "delete"))
+
+
+(defun mail-app-archive-marked-threads ()
+  "Archive every message of the marked threads.
+Gmail messages follow `mail-app-gmail-archive-action'."
+  (interactive)
+  (apply #'mail-app--act-on-marked-threads "Archiving" "Archived" nil
+         "messages" "archive" :after (mail-app--gmail-archive-flag)))
+
+
+(defun mail-app-flag-marked-threads ()
+  "Flag every message of the marked threads."
+  (interactive)
+  (mail-app--act-on-marked-threads "Flagging" "Flagged" nil
+                                   "messages" "flag" :after "--flagged=true"))
+
+
+(defun mail-app-mark-marked-threads-as-read ()
+  "Mark every message of the marked threads as read."
+  (interactive)
+  (mail-app--act-on-marked-threads "Marking as read" "Marked read" nil
+                                   "messages" "mark" :after "--read=true"))
+
+
+(defun mail-app-mark-marked-threads-as-unread ()
+  "Mark every message of the marked threads as unread."
+  (interactive)
+  (mail-app--act-on-marked-threads "Marking as unread" "Marked unread" nil
+                                   "messages" "mark" :after "--read=false"))
+
+
+(defun mail-app-junk-marked-threads ()
+  "Move every message of the marked threads to Junk."
+  (interactive)
+  (mail-app--act-on-marked-threads "Marking as junk" "Junked" nil
+                                   "messages" "move" :after "Junk"))
+
+
+(defun mail-app-move-marked-threads ()
+  "Move every message of the marked threads to another mailbox."
+  (interactive)
+  (let ((target (read-string "Move marked threads to mailbox: ")))
+    (when (and target (not (string-empty-p target)))
+      (mail-app--act-on-marked-threads "Moving" "Moved" nil
+                                       "messages" "move" :after target))))
+
+
 (defun mail-app-view-message-at-point ()
   "View the full message at point."
   (interactive)

@@ -230,6 +230,17 @@ Key bindings:
     (define-key map (kbd "d") 'mail-app-delete-thread-at-point)
     (define-key map (kbd "a") 'mail-app-archive-thread-at-point)
     (define-key map (kbd "t") 'mail-app-mark-thread-at-point)
+    ;; Marking for bulk operations
+    (define-key map (kbd "m") 'mail-app-toggle-thread-mark-at-point)
+    (define-key map (kbd "M") 'mail-app-toggle-thread-mark-backward)
+    (define-key map (kbd "U") 'mail-app-unmark-all)
+    (define-key map (kbd "x") 'mail-app-delete-marked-threads)
+    (define-key map (kbd ",a") 'mail-app-archive-marked-threads)
+    (define-key map (kbd ",f") 'mail-app-flag-marked-threads)
+    (define-key map (kbd ",j") 'mail-app-junk-marked-threads)
+    (define-key map (kbd ",v") 'mail-app-move-marked-threads)
+    (define-key map (kbd ",r") 'mail-app-mark-marked-threads-as-read)
+    (define-key map (kbd ",u") 'mail-app-mark-marked-threads-as-unread)
     (define-key map (kbd "c") 'mail-app-compose)
     (define-key map (kbd "s") 'mail-app-search)
     (define-key map (kbd "q") 'quit-window)
@@ -253,6 +264,12 @@ Press RET to view the full thread. Single-message threads skip to message view.
 Thread actions (multi-message threads ask whether to act on the root
 message or the whole thread):
   f - flag    d - delete    a - archive    t - toggle read
+
+Bulk operations (mark threads with 'm', then; these act on every
+message of each marked thread):
+  x   - delete marked    ,a - archive marked   ,f - flag marked
+  ,j  - junk marked      ,v - move marked      ,r - mark as read
+  ,u  - mark as unread   U  - unmark all
 
 Key bindings:
 \\{mail-app-thread-list-mode-map}"
