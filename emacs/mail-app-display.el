@@ -322,7 +322,7 @@ Falls back to `mail-app--insert-plain' otherwise."
                                               (format "%d messages shown, press N to load more" loaded-count)
                                             (format "%d messages, end of list" loaded-count)))))
     (goto-char (point-min))
-    (forward-line 4)))
+    (forward-line 4))
 
 (defun mail-app--format-message-view (message-id account mailbox)
   "Format message view for MESSAGE-ID in ACCOUNT and MAILBOX based on view mode."
