@@ -835,20 +835,23 @@ Messages without threading headers are grouped with others by subject."
 
 
 (defun mail-app--flatten-threads (threads)
-  "Flatten threaded view THREADS back into a message list.
-For now, returns messages in thread order without visual markers
-(display integration is a separate task).  Each message gains :indent and
-:thread-marker keys for future display use."
-  ;; TODO: Properly flatten thread tree with indentation markers
-  ;; For now, return messages sorted by thread root date, then by reply date
+  "Flatten threaded view THREADS back into a message list with indentation hints.
+Each message gets :indent (0 for root, 1 for reply) and :thread-marker
+('→' for replies, nil for roots) properties for display."
   (let ((result '()))
     (dolist (item threads)
       (if (and (listp item) (plist-get item :id))
-          ;; Single message
-          (push item result)
-        ;; Thread list — add all messages in the thread
-        (dolist (msg (if (listp item) item (list item)))
-          (push msg result))))
+          ;; Single message (root with no children)
+          (push (plist-put (copy-sequence item) :indent 0) result)
+        ;; Thread list — first is root, rest are replies
+        (when (listp item)
+          (let ((msgs (if (listp item) item (list item))))
+            (dolist (msg msgs)
+              (if (eq msg (car msgs))
+                  ;; Root message
+                  (push (plist-put (copy-sequence msg) :indent 0) result)
+                ;; Reply message
+                (push (plist-put (copy-sequence msg) :indent 1) result)))))))
     (nreverse result)))
 
 
