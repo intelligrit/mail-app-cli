@@ -204,6 +204,8 @@ Key bindings:
 \\{mail-app-message-view-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines nil)
+  ;; Word-wrap long paragraphs at word boundaries (display-only).
+  (visual-line-mode 1)
   (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t))
 
 

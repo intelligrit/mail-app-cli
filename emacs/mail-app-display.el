@@ -76,6 +76,17 @@ clutter and are read aloud by screen readers."
   (setq text (string-trim-right text))
   (let ((start (point)))
     (insert text "\n")
+    ;; Heuristic paragraph breaks: HTML block elements lose their
+    ;; spacing in Mail.app's text rendition, so paragraphs run
+    ;; together.  A longish line ending in sentence punctuation that is
+    ;; directly followed by text gets a blank line after it.  Short
+    ;; lines (nav items, addresses, list labels) never match, and
+    ;; quoted/indented lines are left alone.
+    (save-excursion
+      (goto-char start)
+      (while (re-search-forward "^.\\{40,\\}[.!?][\"')]?\n" nil t)
+        (unless (looking-at "[>[:space:]\n]")
+          (insert "\n"))))
     ;; Style quoted lines for both visual and audio differentiation
     (save-excursion
       (goto-char start)
