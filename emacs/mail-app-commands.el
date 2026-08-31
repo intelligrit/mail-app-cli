@@ -607,6 +607,7 @@ Uses the faster unified junk mailbox from Mail.app."
       (mail-app-thread-list-mode)
       (setq mail-app-current-account account)
       (setq mail-app-current-mailbox mailbox))
+    (pop-to-buffer buf)
     (mail-app--run-command-async
      (lambda (output)
        (condition-case err
