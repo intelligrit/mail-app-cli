@@ -228,11 +228,15 @@ Falls back to `mail-app--insert-plain' otherwise."
       (let* ((id (plist-get msg :id))
              (read (plist-get msg :read))
              (indent (plist-get msg :indent))
-             (indent-str (if (and indent (> indent 0)) "  → " ""))
+             (indent-str (if (and indent (> indent 0))
+                             (concat (make-string (* 2 indent) ?\s) "→ ")
+                           ""))
              (subject (plist-get msg :subject))
              (from (plist-get msg :from))
              (unread-marker (if read " " "●"))
-             (subject-display (truncate-string-to-width subject 56 nil nil "..."))
+             (subject-display (truncate-string-to-width
+                               subject (max 20 (- 58 (length indent-str)))
+                               nil nil "..."))
              (line (format "%-2s %-60s %-40s\n"
                            unread-marker
                            (concat indent-str subject-display)
@@ -349,11 +353,15 @@ Falls back to `mail-app--insert-plain' otherwise."
                  (subject (plist-get message :subject))
                  (content (plist-get message :content))
                  (indent (plist-get message :indent))
-                 (indent-str (if (and indent (> indent 0)) "  → " ""))
+                 (indent-str (if (and indent (> indent 0))
+                                 (concat (make-string (* 2 indent) ?\s) "→ ")
+                               ""))
                  (marked (member id mail-app-marked-messages))
                  (mark-str (if marked ">" " "))
                  (flag-str (concat (if read " " "●") (if flagged "⚑" " ")))
-                 (subject-display (truncate-string-to-width subject (if indent-str 56 60) nil nil "..."))
+                 (subject-display (truncate-string-to-width
+                                   subject (max 20 (- 60 (length indent-str)))
+                                   nil nil "..."))
                  (line (format "%-2s %-4s %-60s %-40s\n"
                                mark-str
                                flag-str

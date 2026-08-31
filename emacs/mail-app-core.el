@@ -788,94 +788,124 @@ For 'thread, returns threaded and flattened messages; for other keys, sorts line
       (if reverse (nreverse sorted) sorted))))
 
 
+(defun mail-app--normalize-mid (id)
+  "Normalize RFC Message-ID string ID: trim whitespace and angle brackets.
+Returns nil for nil, empty, or bracket-only input."
+  (when (stringp id)
+    (let ((s (string-trim id "[<[:space:]]+" "[>[:space:]]+")))
+      (unless (string-empty-p s) s))))
+
+(defun mail-app--message-refs (msg)
+  "Normalized ancestor Message-IDs for MSG, nearest ancestor first.
+Draws on In-Reply-To (the direct parent), then References, which the
+RFC orders root-to-parent and is therefore reversed here."
+  (delete-dups
+   (delq nil
+         (cons (mail-app--normalize-mid (plist-get msg :in-reply-to))
+               (mapcar #'mail-app--normalize-mid
+                       (reverse (plist-get msg :references)))))))
+
+(defun mail-app--uf-find (table x)
+  "Union-find: return the set root of X in TABLE."
+  (let ((cur x) next)
+    (while (not (equal (setq next (gethash cur table cur)) cur))
+      (setq cur next))
+    cur))
+
+(defun mail-app--uf-union (table a b)
+  "Union-find: merge the sets of A and B in TABLE."
+  (let ((ra (mail-app--uf-find table a))
+        (rb (mail-app--uf-find table b)))
+    (unless (equal ra rb)
+      (puthash ra rb table))))
+
 (defun mail-app--build-threads (messages)
-  "Build a threaded view of MESSAGES using Message-ID/In-Reply-To/References.
-Returns a list where each element is either a single message or
-a cons (root . children) representing a thread tree.
-Messages without threading headers are grouped with others by subject."
-  (let ((by-id (make-hash-table :test 'equal))
-        (by-subject (make-hash-table :test 'equal))
-        (roots '())
-        (visited (make-hash-table :test 'equal)))
-    ;; Index all messages by Message-ID
+  "Group MESSAGES into threads via Message-ID/In-Reply-To/References.
+Returns a list of threads.  Each thread is a list of message plists in
+display order (oldest first), every message annotated with :indent
+(0 for the thread root, nesting depth for replies).  Two messages land
+in the same thread when their reference chains share any Message-ID,
+so siblings still group even when their common ancestor is outside the
+fetched window.  Threads are ordered by most recent activity, newest
+first.  Messages without usable headers become single-message threads."
+  (let ((uf (make-hash-table :test 'equal))
+        (groups (make-hash-table :test 'equal))
+        (order '())
+        (threads '()))
+    ;; Union every message with its whole reference chain.  Absent
+    ;; ancestors still act as connectors between their descendants.
     (dolist (msg messages)
-      (let ((msg-id (plist-get msg :message-id)))
-        (when msg-id
-          (puthash msg-id msg by-id))))
-    ;; Build parent-child relationships
-    (let ((threads (make-hash-table :test 'equal)))
-      (dolist (msg messages)
-        (let* ((in-reply-to (plist-get msg :in-reply-to))
-               (parent-id (and in-reply-to
-                              (not (string-empty-p in-reply-to))
-                              (substring in-reply-to 1 -1)))) ; strip < >
-          (if (and parent-id (gethash parent-id by-id))
-              ;; Message has a known parent
-              (let ((parent-thread (gethash parent-id threads)))
-                (if parent-thread
-                    (nconc parent-thread (list msg))
-                  (puthash (plist-get msg :id) (list msg) threads)))
-            ;; No parent or parent not found: treat as potential root
-            (unless (gethash (plist-get msg :id) threads)
-              (puthash (plist-get msg :id) (list msg) threads)))))
-      ;; Identify actual roots (messages with no parent in our set)
-      (dolist (msg messages)
-        (let* ((in-reply-to (plist-get msg :in-reply-to))
-               (parent-id (and in-reply-to
-                              (not (string-empty-p in-reply-to))
-                              (substring in-reply-to 1 -1)))
-               (msg-id (plist-get msg :id)))
-          (when (or (not in-reply-to)
-                   (string-empty-p in-reply-to)
-                   (not (gethash parent-id by-id)))
-            (unless (gethash msg-id visited)
-              (puthash msg-id t visited)
-              (let ((thread (gethash msg-id threads)))
-                (if (and thread (> (length thread) 1))
-                    (push thread roots)
-                  (push msg roots)))))))
-      (nreverse roots))))
+      (let ((mid (mail-app--normalize-mid (plist-get msg :message-id))))
+        (when mid
+          (dolist (ref (mail-app--message-refs msg))
+            (mail-app--uf-union uf mid ref)))))
+    ;; Bucket messages by the root of their union-find set.
+    (dolist (msg messages)
+      (let* ((mid (mail-app--normalize-mid (plist-get msg :message-id)))
+             (key (if mid (mail-app--uf-find uf mid)
+                    (format "mail-app--solo-%s" (plist-get msg :id)))))
+        (unless (gethash key groups)
+          (push key order))
+        (push msg (gethash key groups))))
+    ;; Lay each group out oldest-first; nest under nearest known ancestor.
+    (dolist (key (nreverse order))
+      (let ((group (sort (gethash key groups)
+                         (lambda (a b)
+                           (string< (or (plist-get a :date) "")
+                                    (or (plist-get b :date) "")))))
+            (depth (make-hash-table :test 'equal))
+            (laid '()))
+        (dolist (msg group)
+          (let ((mid (mail-app--normalize-mid (plist-get msg :message-id)))
+                (refs (mail-app--message-refs msg))
+                (d nil))
+            ;; The nearest ancestor already laid out decides our depth.
+            (let ((tail refs))
+              (while (and tail (null d))
+                (let ((pd (gethash (car tail) depth)))
+                  (when pd (setq d (min 8 (1+ pd)))))
+                (setq tail (cdr tail))))
+            ;; A reply whose ancestors all sit outside the window still
+            ;; nests one level under the thread's first message.
+            (unless d (setq d (if (and laid refs) 1 0)))
+            (when mid (puthash mid d depth))
+            (push (plist-put (copy-sequence msg) :indent d) laid)))
+        (push (nreverse laid) threads)))
+    ;; Newest activity first.
+    (sort (nreverse threads)
+          (lambda (a b)
+            (string> (or (plist-get (car (last a)) :date) "")
+                     (or (plist-get (car (last b)) :date) ""))))))
 
 
 (defun mail-app--thread-summaries (threads)
   "Create summary plists from THREADS for the thread list view.
-Each summary includes:
-  :thread-root - the root message
-  :all-messages - all messages in the thread
-  :unread - t if ANY message in thread is unread
-  :message-count - number of messages in thread
-  :latest-sender - sender of the last message"
+THREADS is `mail-app--build-threads' output: a list of message lists,
+oldest message (the root) first.  Each summary carries:
+  :thread-id      - Mail.app id of the root message
+  :thread-root    - the root message plist
+  :all-messages   - every message in the thread, oldest first
+  :unread         - t if ANY message in the thread is unread
+  :message-count  - number of messages in the thread
+  :latest-sender  - sender of the newest message"
   (mapcar (lambda (thread)
-            (let ((all-msgs (if (listp (car thread)) thread (list thread)))
-                  (root (if (listp (car thread)) (car thread) thread)))
+            (let ((root (car thread))
+                  (latest (car (last thread))))
               (list :thread-id (plist-get root :id)
                     :thread-root root
-                    :all-messages all-msgs
-                    :unread (seq-some (lambda (m) (not (plist-get m :read))) all-msgs)
-                    :message-count (length all-msgs)
-                    :latest-sender (plist-get (car (last all-msgs)) :from))))
+                    :all-messages thread
+                    :unread (and (seq-some (lambda (m) (not (plist-get m :read)))
+                                           thread)
+                                 t)
+                    :message-count (length thread)
+                    :latest-sender (plist-get latest :from))))
           threads))
 
 
 (defun mail-app--flatten-threads (threads)
-  "Flatten threaded view THREADS back into a message list with indentation hints.
-Each message gets :indent (0 for root, 1 for reply) and :thread-marker
-('→' for replies, nil for roots) properties for display."
-  (let ((result '()))
-    (dolist (item threads)
-      (if (and (listp item) (plist-get item :id))
-          ;; Single message (root with no children)
-          (push (plist-put (copy-sequence item) :indent 0) result)
-        ;; Thread list — first is root, rest are replies
-        (when (listp item)
-          (let ((msgs (if (listp item) item (list item))))
-            (dolist (msg msgs)
-              (if (eq msg (car msgs))
-                  ;; Root message
-                  (push (plist-put (copy-sequence msg) :indent 0) result)
-                ;; Reply message
-                (push (plist-put (copy-sequence msg) :indent 1) result)))))))
-    (nreverse result)))
+  "Flatten THREADS (from `mail-app--build-threads') into one message list.
+Messages keep the :indent annotation the builder added."
+  (apply #'append (mapcar #'copy-sequence threads)))
 
 
 
