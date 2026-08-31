@@ -202,6 +202,7 @@ Falls back to `mail-app--insert-plain' otherwise."
                                   ('date "date")
                                   ('subject "subject")
                                   ('from "from")
+                                  ('thread "thread")
                                   ('unread "unread")
                                   ('read "unread"))
                                 (if mail-app-message-sort-reverse " ↓" " ↑")))
@@ -274,16 +275,20 @@ Falls back to `mail-app--insert-plain' otherwise."
                  (from (plist-get message :from))
                  (subject (plist-get message :subject))
                  (content (plist-get message :content))
+                 (indent (plist-get message :indent))
+                 (indent-str (if (and indent (> indent 0)) "  → " ""))
                  (marked (member id mail-app-marked-messages))
                  (mark-str (if marked ">" " "))
                  (flag-str (concat (if read " " "●") (if flagged "⚑" " ")))
+                 (subject-display (truncate-string-to-width subject (if indent-str 56 60) nil nil "..."))
                  (line (format "%-2s %-4s %-60s %-40s\n"
                                mark-str
                                flag-str
-                               (truncate-string-to-width subject 60 nil nil "...")
+                               (concat indent-str subject-display)
                                (truncate-string-to-width from 40 nil nil "...")))
                  (speech-text (mail-app--escape-for-speech
                                (concat
+                                (if (and indent (> indent 0)) "Reply. " "")
                                 (if (and (not read) (not is-unread-view)) "Unread. " "")
                                 (if marked "Marked. " "")
                                 (if flagged "Flagged. " "")
