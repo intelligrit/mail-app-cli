@@ -340,6 +340,10 @@ Gmail's All Mail is never touched.  One Mail.app round trip for everything."
            (not (string-equal mail-app-current-account "All Accounts")))
       (mail-app-list-messages mail-app-current-account mail-app-current-mailbox))
      (t (message "Cannot refresh - no context"))))
+   ((eq major-mode 'mail-app-thread-list-mode)
+    (if (and mail-app-current-account mail-app-current-mailbox)
+        (mail-app-list-threads mail-app-current-account mail-app-current-mailbox)
+      (message "Cannot refresh - no context")))
    (t
     (message "Nothing to refresh"))))
 
@@ -771,6 +775,85 @@ Uses the faster unified junk mailbox from Mail.app."
     (pop-to-buffer buf)))
 
 
+(defun mail-app--act-on-thread (thread-data label verb-past confirm &rest args)
+  "Apply one mutation to every message in THREAD-DATA, one CLI call.
+LABEL is spoken while working (\"Deleting\"); VERB-PAST heads the summary
+(\"Deleted\"); when CONFIRM is non-nil, ask first.  ARGS are passed to
+`mail-app--run-mutation-async'."
+  (let* ((ids (mapcar (lambda (m) (plist-get m :id))
+                      (plist-get thread-data :all-messages)))
+         (count (length ids)))
+    (when (or (not confirm)
+              (yes-or-no-p (format "%s thread (%d message%s)? "
+                                   label count (if (= count 1) "" "s"))))
+      (mail-app--speak (format "%s %d messages" label count) 'select-object)
+      (let ((buf (current-buffer)))
+        (apply #'mail-app--run-mutation-async
+               ids
+               (lambda (result)
+                 (let ((msg (mail-app--mutation-summary result verb-past)))
+                   (message "%s" msg)
+                   (mail-app--speak msg 'task-done))
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf
+                     (mail-app-refresh))))
+               args)))))
+
+
+(defun mail-app-delete-thread-at-point ()
+  "Delete every message in the thread at point (with confirmation)."
+  (interactive)
+  (let ((thread (get-text-property (point) 'mail-app-thread-data)))
+    (if (not thread)
+        (message "No thread at point")
+      (mail-app--act-on-thread thread "Delete" "Deleted" t
+                               "messages" "delete"))))
+
+
+(defun mail-app-archive-thread-at-point ()
+  "Archive every message in the thread at point.
+Gmail messages follow `mail-app-gmail-archive-action'."
+  (interactive)
+  (let ((thread (get-text-property (point) 'mail-app-thread-data)))
+    (if (not thread)
+        (message "No thread at point")
+      (apply #'mail-app--act-on-thread thread "Archiving" "Archived" nil
+             "messages" "archive" :after (mail-app--gmail-archive-flag)))))
+
+
+(defun mail-app-flag-thread-at-point ()
+  "Toggle flag on the thread at point.
+Flags every message if any is unflagged; otherwise unflags them all."
+  (interactive)
+  (let ((thread (get-text-property (point) 'mail-app-thread-data)))
+    (if (not thread)
+        (message "No thread at point")
+      (let ((any-unflagged (seq-some (lambda (m) (not (plist-get m :flagged)))
+                                     (plist-get thread :all-messages))))
+        (mail-app--act-on-thread thread
+                                 (if any-unflagged "Flagging" "Unflagging")
+                                 (if any-unflagged "Flagged" "Unflagged")
+                                 nil
+                                 "messages" "flag" :after
+                                 (if any-unflagged "--flagged=true" "--flagged=false"))))))
+
+
+(defun mail-app-mark-thread-at-point ()
+  "Toggle read state of the thread at point.
+Marks every message read if any is unread; otherwise marks them all unread."
+  (interactive)
+  (let ((thread (get-text-property (point) 'mail-app-thread-data)))
+    (if (not thread)
+        (message "No thread at point")
+      (let ((any-unread (plist-get thread :unread)))
+        (mail-app--act-on-thread thread
+                                 (if any-unread "Marking read" "Marking unread")
+                                 (if any-unread "Marked read" "Marked unread")
+                                 nil
+                                 "messages" "mark" :after
+                                 (if any-unread "--read=true" "--read=false"))))))
+
+
 (defun mail-app-view-message-at-point ()
   "View the full message at point."
   (interactive)
@@ -783,7 +866,9 @@ Uses the faster unified junk mailbox from Mail.app."
              ;; For search results, use account/mailbox from message data
              (account (or (plist-get message :account) mail-app-current-account))
              (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox)))
-        (mail-app-view-message id account mailbox)))))
+        (if (not id)
+            (message "Message has no ID")
+          (mail-app-view-message id account mailbox))))))
 
 
 
