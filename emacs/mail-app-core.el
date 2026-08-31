@@ -847,6 +847,7 @@ Each message plist gains an :indent and :thread-marker key for display."
 
 
 
+(defun mail-app--parse-attachments-output (output)
   "Parse attachments list OUTPUT (JSON) into a list of plists."
   (condition-case err
       (let* ((json-array (json-parse-string output :object-type 'alist :array-type 'list))
