@@ -807,6 +807,7 @@ Messages without threading headers are grouped with others by subject."
       (dolist (msg messages)
         (let* ((in-reply-to (plist-get msg :in-reply-to))
                (parent-id (and in-reply-to
+                              (not (string-empty-p in-reply-to))
                               (substring in-reply-to 1 -1)))) ; strip < >
           (if (and parent-id (gethash parent-id by-id))
               ;; Message has a known parent
@@ -821,9 +822,11 @@ Messages without threading headers are grouped with others by subject."
       (dolist (msg messages)
         (let* ((in-reply-to (plist-get msg :in-reply-to))
                (parent-id (and in-reply-to
+                              (not (string-empty-p in-reply-to))
                               (substring in-reply-to 1 -1)))
                (msg-id (plist-get msg :id)))
           (when (or (not in-reply-to)
+                   (string-empty-p in-reply-to)
                    (not (gethash parent-id by-id)))
             (unless (gethash msg-id visited)
               (puthash msg-id t visited)
