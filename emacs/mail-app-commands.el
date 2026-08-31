@@ -599,18 +599,14 @@ Uses the faster unified junk mailbox from Mail.app."
          (read-string "Mailbox: " "INBOX")))
   (mail-app--speak (format "Loading threads from %s" mailbox) 'select-object)
   (let* ((limit (mail-app--compute-message-limit))
-         (args (list "messages" "list" "-a" account "-m" mailbox
-                     "-l" (number-to-string limit)
-                     "-o" "0"))
-         (args (append args (mail-app--content-args mailbox)))
-         (args (append args '("--with-headers")))
          (buf (get-buffer-create (format "*Mail.app Threads: %s/%s*" account mailbox))))
     (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (propertize "Loading threads...\n" 'face 'italic)))
       (mail-app-thread-list-mode)
       (setq mail-app-current-account account)
-      (setq mail-app-current-mailbox mailbox)
-      (erase-buffer)
-      (insert (propertize "Loading threads...\n" 'face 'italic)))
+      (setq mail-app-current-mailbox mailbox))
     (mail-app--run-command-async
      (lambda (output)
        (with-current-buffer buf
