@@ -175,7 +175,80 @@ Falls back to `mail-app--insert-plain' otherwise."
 
 
 
+(defun mail-app--format-thread-list (thread-summaries)
+  "Format THREAD-SUMMARIES for display in thread list view."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (propertize (format "%s / %s / Threads\n"
+                                (or mail-app-current-account "Search")
+                                (or mail-app-current-mailbox "All"))
+                        'face 'bold))
+    (insert "\n")
+    (insert (format "%-2s %-3s %-45s %-30s %8s\n"
+                    "" "   " "THREAD" "LATEST FROM" "COUNT"))
+    (insert (make-string 95 ?-) "\n")
+    (dolist (summary thread-summaries)
+      (let* ((root (plist-get summary :thread-root))
+             (unread (plist-get summary :unread))
+             (count (plist-get summary :message-count))
+             (subject (plist-get root :subject))
+             (from (plist-get summary :latest-sender))
+             (unread-marker (if unread "●" " "))
+             (line (format "%-2s %-3s %-45s %-30s %8d\n"
+                           " "
+                           unread-marker
+                           (truncate-string-to-width subject 45 nil nil "...")
+                           (truncate-string-to-width from 30 nil nil "...")
+                           count))
+             (speech-text (format "%s thread%s, %d messages, from %s"
+                                 subject
+                                 (if unread " unread" "")
+                                 count
+                                 from))
+             (start (point)))
+        (insert line)
+        (put-text-property start (point) 'mail-app-thread-data summary)
+        (put-text-property start (point) 'emacspeak-speak speech-text)
+        (when unread
+          (put-text-property start (point) 'face 'bold))))
+    (goto-char (point-min))
+    (forward-line 4)))
 
+
+(defun mail-app--format-thread-view (messages)
+  "Format MESSAGES (from one thread) as a tree view."
+  (let ((inhibit-read-only t))
+    (erase-buffer)
+    (insert (propertize "Thread View\n" 'face 'bold))
+    (insert "\n")
+    (insert (format "%-2s %-60s %-40s\n"
+                    "" "SUBJECT" "FROM"))
+    (insert (make-string 110 ?-) "\n")
+    (dolist (msg messages)
+      (let* ((id (plist-get msg :id))
+             (read (plist-get msg :read))
+             (indent (plist-get msg :indent))
+             (indent-str (if (and indent (> indent 0)) "  → " ""))
+             (subject (plist-get msg :subject))
+             (from (plist-get msg :from))
+             (unread-marker (if read " " "●"))
+             (subject-display (truncate-string-to-width subject 56 nil nil "..."))
+             (line (format "%-2s %-60s %-40s\n"
+                           unread-marker
+                           (concat indent-str subject-display)
+                           (truncate-string-to-width from 40 nil nil "...")))
+             (speech-text (concat
+                          (if (and indent (> indent 0)) "Reply. " "")
+                          (if (not read) "Unread. " "")
+                          subject ". From " from "."))
+             (start (point)))
+        (insert line)
+        (put-text-property start (point) 'mail-app-message-data msg)
+        (put-text-property start (point) 'emacspeak-speak speech-text)
+        (when (not read)
+          (put-text-property start (point) 'face 'bold))))
+    (goto-char (point-min))
+    (forward-line 4)))
 
 
 (defun mail-app--format-messages (messages)

@@ -240,14 +240,14 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
 
 
 (defun mail-app-view-messages-at-point ()
-  "View messages for the mailbox at point."
+  "View threads for the mailbox at point."
   (interactive)
   (let ((mailbox (mail-app--get-mailbox-at-point)))
     (if (not mailbox)
         (message "No mailbox at point")
       (let ((account (plist-get mailbox :account))
             (name (plist-get mailbox :name)))
-        (mail-app-list-messages account name)))))
+        (mail-app-list-threads account name)))))
 
 
 
@@ -590,6 +590,42 @@ Uses the faster unified junk mailbox from Mail.app."
 
 
 
+;;; Interactive commands - Threads
+
+(defun mail-app-list-threads (account mailbox)
+  "List threads for ACCOUNT and MAILBOX."
+  (interactive
+   (list (read-string "Account: " mail-app-default-account)
+         (read-string "Mailbox: " "INBOX")))
+  (mail-app--speak (format "Loading threads from %s" mailbox) 'select-object)
+  (let* ((limit (mail-app--compute-message-limit))
+         (args (list "messages" "list" "-a" account "-m" mailbox
+                     "-l" (number-to-string limit)
+                     "-o" "0"))
+         (args (append args (mail-app--content-args mailbox)))
+         (args (append args '("--with-headers")))
+         (buf (get-buffer-create (format "*Mail.app Threads: %s/%s*" account mailbox))))
+    (with-current-buffer buf
+      (mail-app-thread-list-mode)
+      (setq mail-app-current-account account)
+      (setq mail-app-current-mailbox mailbox)
+      (erase-buffer)
+      (insert (propertize "Loading threads...\n" 'face 'italic)))
+    (mail-app--run-command-async
+     (lambda (output)
+       (with-current-buffer buf
+         (let* ((messages (mail-app--parse-messages-output output))
+                (threads (mail-app--build-threads messages))
+                (summaries (mail-app--thread-summaries threads)))
+           (setq mail-app-threads-data summaries)
+           (mail-app--format-thread-list summaries)
+           (mail-app--speak (format "%d threads" (length summaries)) 'select-object))))
+     "messages" "list" "-a" account "-m" mailbox
+     "-l" (number-to-string limit)
+     "-o" "0"
+     "--with-headers")))
+
+
 ;;; Interactive commands - Messages
 
 (defun mail-app-list-messages (account mailbox)
@@ -691,6 +727,42 @@ Uses the faster unified junk mailbox from Mail.app."
                        (mail-app--emacspeak-speak-line))))))
              args))))
 
+
+(defun mail-app-view-thread-at-point ()
+  "View the thread at point, or message if thread has only one message."
+  (interactive)
+  (unless mail-app-threads-data
+    (error "No threads to view"))
+  (let ((thread-data (get-text-property (point) 'mail-app-thread-data)))
+    (if (not thread-data)
+        (mail-app--speak "No thread at point" 'warn-user)
+      (let ((all-msgs (plist-get thread-data :all-messages)))
+        (if (= (length all-msgs) 1)
+            ;; Single message thread - skip to message view
+            (let ((msg (car all-msgs)))
+              (mail-app-view-message msg))
+          ;; Multi-message thread - show thread view
+          (mail-app-show-thread-view thread-data))))))
+
+
+(defun mail-app-show-thread-view (thread-data)
+  "Display the messages in THREAD-DATA as a tree view."
+  (let* ((root (plist-get thread-data :thread-root))
+         (all-msgs (plist-get thread-data :all-messages))
+         (account mail-app-current-account)
+         (mailbox mail-app-current-mailbox)
+         (thread-id (plist-get thread-data :thread-id))
+         (buf (get-buffer-create (format "*Mail.app Thread: %s*"
+                                         (plist-get root :subject)))))
+    (with-current-buffer buf
+      (mail-app-thread-view-mode)
+      (setq mail-app-current-account account)
+      (setq mail-app-current-mailbox mailbox)
+      (setq mail-app-current-thread-id thread-id)
+      (mail-app--format-thread-view all-msgs)
+      (mail-app--speak (format "Showing %d messages in thread" (length all-msgs))
+                       'select-object))
+    (pop-to-buffer buf)))
 
 
 (defun mail-app-view-message-at-point ()

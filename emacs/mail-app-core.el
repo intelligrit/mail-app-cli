@@ -837,6 +837,26 @@ Messages without threading headers are grouped with others by subject."
       (nreverse roots))))
 
 
+(defun mail-app--thread-summaries (threads)
+  "Create summary plists from THREADS for the thread list view.
+Each summary includes:
+  :thread-root - the root message
+  :all-messages - all messages in the thread
+  :unread - t if ANY message in thread is unread
+  :message-count - number of messages in thread
+  :latest-sender - sender of the last message"
+  (mapcar (lambda (thread)
+            (let ((all-msgs (if (listp (car thread)) thread (list thread)))
+                  (root (if (listp (car thread)) (car thread) thread)))
+              (list :thread-id (plist-get root :id)
+                    :thread-root root
+                    :all-messages all-msgs
+                    :unread (seq-some (lambda (m) (not (plist-get m :read))) all-msgs)
+                    :message-count (length all-msgs)
+                    :latest-sender (plist-get (car (last all-msgs)) :from))))
+          threads))
+
+
 (defun mail-app--flatten-threads (threads)
   "Flatten threaded view THREADS back into a message list with indentation hints.
 Each message gets :indent (0 for root, 1 for reply) and :thread-marker
