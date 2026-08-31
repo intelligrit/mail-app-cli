@@ -202,7 +202,6 @@ Falls back to `mail-app--insert-plain' otherwise."
                                   ('date "date")
                                   ('subject "subject")
                                   ('from "from")
-                                  ('thread "thread")
                                   ('unread "unread")
                                   ('read "unread"))
                                 (if mail-app-message-sort-reverse " ↓" " ↑")))
@@ -263,55 +262,47 @@ Falls back to `mail-app--insert-plain' otherwise."
                   (put-text-property start line-end 'face 'highlight))
                  ((not read)
                   (put-text-property start line-end 'face 'bold)))))))
-      ;; Regular message list: show SUBJECT and FROM only (with optional thread indent)
+      ;; Regular message list: show SUBJECT and FROM only
       (progn
-        (let ((is-thread (eq mail-app-message-sort-key 'thread)))
-          (if is-thread
-              (insert (format "%-2s %-4s %-60s %-40s\n"
-                              "" "FLAG" "SUBJECT" "FROM"))
-            (insert (format "%-2s %-4s %-60s %-40s\n"
-                            "" "FLAG" "SUBJECT" "FROM")))
-          (insert (make-string 110 ?-) "\n")
-          (dolist (message sorted-messages)
-            (let* ((id (plist-get message :id))
-                   (read (plist-get message :read))
-                   (flagged (plist-get message :flagged))
-                   (from (plist-get message :from))
-                   (subject (plist-get message :subject))
-                   (content (plist-get message :content))
-                   (indent (plist-get message :indent))
-                   (indent-str (if (and is-thread indent (> indent 0)) "  → " "  "))
-                   (subject-display (truncate-string-to-width subject (if (and is-thread indent) 56 60) nil nil "..."))
-                   (marked (member id mail-app-marked-messages))
-                   (mark-str (if marked ">" " "))
-                   (flag-str (concat (if read " " "●") (if flagged "⚑" " ")))
-                   (line (format "%-2s %-4s %-60s %-40s\n"
-                                 mark-str
-                                 flag-str
-                                 (concat indent-str subject-display)
-                                 (truncate-string-to-width from 40 nil nil "...")))
-                   (speech-text (mail-app--escape-for-speech
-                                 (concat
-                                  (if (and is-thread indent (> indent 0)) "Reply. " "")
-                                  (if (and (not read) (not is-unread-view)) "Unread. " "")
-                                  (if marked "Marked. " "")
-                                  (if flagged "Flagged. " "")
-                                  subject ". From " from ". "
-                                  (when (and content (not (string-empty-p content)))
-                                    (format "Content, %s"
-                                            (truncate-string-to-width content 300 nil nil "..."))))))
-                   (start (point)))
-              (insert line)
-              (let ((line-end (1- (point))))
-                (put-text-property start line-end 'mail-app-message-data message)
-                (put-text-property start line-end 'emacspeak-speak speech-text)
-                (when marked
-                  (put-text-property start (1+ start) 'auditory-icon nil))
-                (cond
-                 (marked
-                  (put-text-property start line-end 'face 'highlight))
-                 ((not read)
-                  (put-text-property start line-end 'face 'bold))))))))))
+        (insert (format "%-2s %-4s %-60s %-40s\n"
+                        "" "FLAG" "SUBJECT" "FROM"))
+        (insert (make-string 110 ?-) "\n")
+        (dolist (message sorted-messages)
+          (let* ((id (plist-get message :id))
+                 (read (plist-get message :read))
+                 (flagged (plist-get message :flagged))
+                 (from (plist-get message :from))
+                 (subject (plist-get message :subject))
+                 (content (plist-get message :content))
+                 (marked (member id mail-app-marked-messages))
+                 (mark-str (if marked ">" " "))
+                 (flag-str (concat (if read " " "●") (if flagged "⚑" " ")))
+                 (line (format "%-2s %-4s %-60s %-40s\n"
+                               mark-str
+                               flag-str
+                               (truncate-string-to-width subject 60 nil nil "...")
+                               (truncate-string-to-width from 40 nil nil "...")))
+                 (speech-text (mail-app--escape-for-speech
+                               (concat
+                                (if (and (not read) (not is-unread-view)) "Unread. " "")
+                                (if marked "Marked. " "")
+                                (if flagged "Flagged. " "")
+                                subject ". From " from ". "
+                                (when (and content (not (string-empty-p content)))
+                                  (format "Content, %s"
+                                          (truncate-string-to-width content 300 nil nil "..."))))))
+                 (start (point)))
+            (insert line)
+            (let ((line-end (1- (point))))
+              (put-text-property start line-end 'mail-app-message-data message)
+              (put-text-property start line-end 'emacspeak-speak speech-text)
+              (when marked
+                (put-text-property start (1+ start) 'auditory-icon nil))
+              (cond
+               (marked
+                (put-text-property start line-end 'face 'highlight))
+               ((not read)
+                (put-text-property start line-end 'face 'bold))))))))
     ;; Footer: pagination status
     (let* ((more-available (>= loaded-count page-limit))
            (footer (if more-available
@@ -322,7 +313,7 @@ Falls back to `mail-app--insert-plain' otherwise."
                                               (format "%d messages shown, press N to load more" loaded-count)
                                             (format "%d messages, end of list" loaded-count)))))
     (goto-char (point-min))
-    (forward-line 4))
+    (forward-line 4)))
 
 (defun mail-app--format-message-view (message-id account mailbox)
   "Format message view for MESSAGE-ID in ACCOUNT and MAILBOX based on view mode."
