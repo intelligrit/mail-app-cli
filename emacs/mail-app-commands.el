@@ -970,18 +970,105 @@ Marks the chosen messages read if any is unread; otherwise unread."
 
 
 
+(defun mail-app--view-sequence (scope)
+  "Messages to navigate from the current view, in display order.
+SCOPE is `thread' (the thread containing the current message) or
+`list' (every message in the originating list buffer).  Signals a
+`user-error' when the originating buffer is gone."
+  (let ((src mail-app-view-source-buffer)
+        (id mail-app-current-message-id))
+    (unless (buffer-live-p src)
+      (user-error "The list this message came from is gone"))
+    (with-current-buffer src
+      (let ((all (if (eq major-mode 'mail-app-thread-list-mode)
+                     (apply #'append
+                            (mapcar (lambda (s) (plist-get s :all-messages))
+                                    mail-app-threads-data))
+                   (mail-app--sort-messages mail-app-messages-data
+                                            mail-app-message-sort-key
+                                            mail-app-message-sort-reverse))))
+        (if (eq scope 'list)
+            all
+          (or (seq-find (lambda (thread)
+                          (seq-some (lambda (m)
+                                      (equal (plist-get m :id) id))
+                                    thread))
+                        (mail-app--build-threads all))
+              '()))))))
+
+
+(defun mail-app--view-nav (scope direction)
+  "From message view, show the DIRECTION (+1/-1) message in SCOPE.
+SCOPE is `thread' or `list'.  Announces the position, reuses the same
+window, and kills the view buffer being left."
+  (let* ((seq (mail-app--view-sequence scope))
+         (ids (mapcar (lambda (m) (plist-get m :id)) seq))
+         (idx (seq-position ids mail-app-current-message-id))
+         (target-idx (and idx (+ idx direction))))
+    (cond
+     ((null idx)
+      (user-error "Current message not found in the %s" scope))
+     ((or (< target-idx 0) (>= target-idx (length seq)))
+      (mail-app--speak (format "No %s message in %s"
+                               (if (> direction 0) "next" "previous")
+                               scope)
+                       'warn-user)
+      (message "No %s message in %s"
+               (if (> direction 0) "next" "previous") scope))
+     (t
+      (let* ((target (nth target-idx seq))
+             (old (current-buffer)))
+        (mail-app--speak (format "%s %d of %d"
+                                 (if (eq scope 'thread) "Thread message" "Message")
+                                 (1+ target-idx) (length seq))
+                         'select-object)
+        (mail-app-view-message (plist-get target :id)
+                               (or (plist-get target :account)
+                                   mail-app-current-account)
+                               (or (plist-get target :mailbox)
+                                   mail-app-current-mailbox))
+        (kill-buffer old))))))
+
+
+(defun mail-app-view-next-in-thread ()
+  "Show the next message in the current message's thread."
+  (interactive)
+  (mail-app--view-nav 'thread +1))
+
+(defun mail-app-view-previous-in-thread ()
+  "Show the previous message in the current message's thread."
+  (interactive)
+  (mail-app--view-nav 'thread -1))
+
+(defun mail-app-view-next-in-list ()
+  "Show the next message in the originating message list."
+  (interactive)
+  (mail-app--view-nav 'list +1))
+
+(defun mail-app-view-previous-in-list ()
+  "Show the previous message in the originating message list."
+  (interactive)
+  (mail-app--view-nav 'list -1))
+
+
 (defun mail-app-view-message (message-id account mailbox)
   "View full MESSAGE-ID in ACCOUNT and MAILBOX."
   (interactive
    (list (read-string "Message ID: ")
          (read-string "Account: " mail-app-default-account)
          (read-string "Mailbox: " "INBOX")))
-  (let ((buf (get-buffer-create (format "*Mail.app Message: %s*" message-id))))
+  (let ((src (cond ((memq major-mode '(mail-app-messages-mode
+                                       mail-app-thread-list-mode))
+                    (current-buffer))
+                   ((buffer-live-p mail-app-view-source-buffer)
+                    mail-app-view-source-buffer)))
+        (buf (get-buffer-create (format "*Mail.app Message: %s*" message-id))))
     (with-current-buffer buf
       (mail-app-message-view-mode)
       (setq mail-app-current-message-id message-id)
       (setq mail-app-current-account account)
       (setq mail-app-current-mailbox mailbox)
+      (setq mail-app-view-source-buffer src)
       (setq mail-app-current-view-mode 'plain)
       (let ((inhibit-read-only t))
         (erase-buffer)

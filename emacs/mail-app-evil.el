@@ -146,6 +146,10 @@
 
     (evil-define-key '(normal motion) mail-app-message-view-mode-map
       (kbd "RET") 'mail-app-save-attachment-at-point
+      "N" 'mail-app-view-next-in-thread
+      "P" 'mail-app-view-previous-in-thread
+      (kbd "M-n") 'mail-app-view-next-in-list
+      (kbd "M-p") 'mail-app-view-previous-in-list
       "r" 'mail-app-reply-current-message
       "R" 'mail-app-reply-all-current-message
       "F" 'mail-app-forward-current-message

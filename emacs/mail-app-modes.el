@@ -100,6 +100,10 @@
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "n") 'next-line)
     (define-key map (kbd "p") 'previous-line)
+    (define-key map (kbd "N") 'mail-app-view-next-in-thread)
+    (define-key map (kbd "P") 'mail-app-view-previous-in-thread)
+    (define-key map (kbd "M-n") 'mail-app-view-next-in-list)
+    (define-key map (kbd "M-p") 'mail-app-view-previous-in-list)
     (define-key map (kbd "r") 'mail-app-reply-current-message)
     (define-key map (kbd "R") 'mail-app-reply-all-current-message)
     (define-key map (kbd "F") 'mail-app-forward-current-message)
@@ -196,6 +200,10 @@ Message actions:
   r - reply          R - reply all      F - forward
   f - flag/unflag    d - delete         a - archive
   t - mark as unread
+
+Navigation without leaving the view:
+  N / P     - next / previous message in this thread
+  M-n / M-p - next / previous message in the originating list
 
 In attachments view:
   RET or s - save attachment at point

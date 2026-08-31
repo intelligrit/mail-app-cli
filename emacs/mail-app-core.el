@@ -405,6 +405,13 @@ Each element is a plist from `mail-app--thread-summaries'.")
 
 
 
+(defvar-local mail-app-view-source-buffer nil
+  "The list buffer a message view was opened from.
+Used by the next/previous navigation commands in message view to walk
+the thread or the full message list without leaving the view.")
+
+
+
 (defvar-local mail-app-thread-view nil
   "Non-nil when this messages buffer shows a single thread.
 Holds the thread summary plist (see `mail-app--thread-summaries').
