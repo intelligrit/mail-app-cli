@@ -18,9 +18,9 @@ mail-app-wrap is an Emacs interface to mail-app-cli, providing a full-featured m
    - No shell escaping needed (direct process invocation)
 
 2. **Data Parsing**
-   - `mail-app--parse-mailboxes-output`: Parses tabular mailbox list
-   - `mail-app--parse-messages-output`: Parses tabular message list
-   - Both use regex to extract tab-separated fields
+   - `mail-app--parse-mailboxes-output`: Parses JSON mailbox list
+   - `mail-app--parse-messages-output`: Parses JSON message list
+   - Both use `json-parse-string` to unmarshal JSON
    - Returns list of plists (`:account`, `:name`, `:unread`, etc.)
 
 3. **Display Formatting**
@@ -64,7 +64,7 @@ mail-app-cli (executes AppleScript/JXA)
   ↓
 Mail.app (performs operation)
   ↓
-Output (tabular text)
+Output (JSON)
   ↓
 Parser (mail-app--parse-*-output)
   ↓
@@ -153,9 +153,8 @@ When calling from Emacs, the arguments are passed as a list:
 
 ### Parsing Limitations
 
-- Assumes tab-separated output format from CLI
 - Subject/sender truncation happens at display time
-- No JSON output mode (yet) - uses text parsing
+- Message JSON fields are fixed per CLI's current version
 
 ### Buffer Management
 
@@ -274,19 +273,26 @@ Implemented functionality:
 - ✅ Async operations (non-blocking UI)
 - ✅ Full Emacspeak integration
 - ✅ Evil mode keybindings
+- ✅ Message threading support (thread grouping, sort-cycle toggle)
 
 ## Known Issues and Future Enhancements
 
 Current bugs to fix:
 - [ ] Attachments view not working properly (view cycling to attachments mode)
 
+## Message Threading Support
+
+Message threading is built into the data layer:
+- `MessageID`: Always included in message JSON (RFC 5322 Message-ID header)
+- `InReplyTo`: Parsed from raw message headers (opt-in with `--with-headers` CLI flag)
+- `References`: List of ancestor Message-IDs (opt-in with `--with-headers` CLI flag)
+
+In Elisp, `mail-app--build-threads` groups messages by References chains to construct a tree. A threaded view mode can be toggled via the sort cycle (`o` key in messages mode). Thread display uses visual indentation and symbols (e.g. `→` for replies, `├` for branches).
+
 Potential improvements (not currently implemented):
-- JSON output mode for more reliable parsing
 - Attachment save functionality in Emacs
-- Message threading
 - Multiple mailbox selection
-- Persistent filters/sorting
-- Draft management
 - Account-specific colors/faces
 - Integration with org-mode (capture emails as TODOs)
 - Configurable keybindings
+- Thread expansion/collapse controls
