@@ -60,20 +60,27 @@ clutter and are read aloud by screen readers."
 
 (defun mail-app--insert-plain (text)
   "Insert plain-text email body TEXT with readability cleanup.
+Formatted for screen-reader flow: meaningful lines only, never more
+than one consecutive blank line.
 - Scrubs invisible junk (image placeholders, zero-width characters)
-- Normalises CRLF to LF
-- Strips trailing whitespace per line
-- Collapses runs of 3+ blank lines to 2
+- Deletes decoration-only lines (ruled lines, stray punctuation) that
+  screen readers would speak as noise
+- Strips trailing whitespace per line, collapses all blank runs to a
+  single blank line, drops leading blanks
 - Marks quoted lines (starting with >) with `shadow' face and,
   when Emacspeak is present, a monotone personality so they are
   spoken in a clearly different voice."
-  ;; Scrub junk first: lines holding only image placeholders become
-  ;; blank, then whitespace-stripping and blank-collapsing swallow them.
-  (setq text (mail-app--scrub-text text))
   (setq text (replace-regexp-in-string "\r\n" "\n" text))
+  ;; Scrub junk: lines holding only image placeholders become blank,
+  ;; and the blank-collapsing below swallows them.
+  (setq text (mail-app--scrub-text text))
+  ;; Decoration-only lines (no letters or digits): ruled lines, table
+  ;; borders, stray punctuation.  Emptied here, collapsed below.
+  ;; Quoted lines are kept.
+  (setq text (replace-regexp-in-string "^[^[:alnum:]>\n]+$" "" text))
   (setq text (replace-regexp-in-string "[ \t]+\n" "\n" text))
-  (setq text (replace-regexp-in-string "\n\n\n+" "\n\n" text))
-  (setq text (string-trim-right text))
+  (setq text (replace-regexp-in-string "\n\n+" "\n\n" text))
+  (setq text (string-trim text))
   (let ((start (point)))
     (insert text "\n")
     ;; Heuristic paragraph breaks: HTML block elements lose their
