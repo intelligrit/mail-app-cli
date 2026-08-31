@@ -229,24 +229,6 @@ Key bindings:
 
 
 
-(defvar mail-app-thread-view-mode-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") 'mail-app-view-message-at-point)
-    (define-key map (kbd "n") 'next-line)
-    (define-key map (kbd "p") 'previous-line)
-    (define-key map (kbd "g") 'mail-app-refresh)
-    (define-key map (kbd "f") 'mail-app-flag-message-at-point)
-    (define-key map (kbd "d") 'mail-app-delete-message-at-point)
-    (define-key map (kbd "a") 'mail-app-archive-message-at-point)
-    (define-key map (kbd "t") 'mail-app-mark-message-at-point)
-    (define-key map (kbd "c") 'mail-app-compose)
-    (define-key map (kbd "q") 'quit-window)
-    (define-key map (kbd "?") 'describe-mode)
-    map)
-  "Keymap for `mail-app-thread-view-mode'.")
-
-
-
 (define-derived-mode mail-app-thread-list-mode special-mode "Mail-App-Threads"
   "Major mode for viewing threads in a Mail.app mailbox.
 
@@ -258,7 +240,8 @@ This mode displays message threads as a collapsed list. Each thread shows:
 
 Press RET to view the full thread. Single-message threads skip to message view.
 
-Thread actions (affects all messages in thread):
+Thread actions (multi-message threads ask whether to act on the root
+message or the whole thread):
   f - flag    d - delete    a - archive    t - toggle read
 
 Key bindings:
@@ -267,25 +250,6 @@ Key bindings:
   (setq truncate-lines t)
   (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t))
 
-
-
-(define-derived-mode mail-app-thread-view-mode special-mode "Mail-App-Thread"
-  "Major mode for viewing a single message thread.
-
-This mode displays all messages in a thread as a visible tree structure:
-  - Root message at top (no indent)
-  - Replies nested with indentation and → marker
-
-Press RET to view a message's full content.
-
-Message actions:
-  f - flag    d - delete    a - archive    t - toggle read
-
-Key bindings:
-\\{mail-app-thread-view-mode-map}"
-  (setq buffer-read-only t)
-  (setq truncate-lines t)
-  (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t))
 
 
 (provide 'mail-app-modes)

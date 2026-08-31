@@ -399,6 +399,22 @@ so that every page uses the same batch size even if the window is resized.")
 
 
 
+(defvar-local mail-app-threads-data nil
+  "Thread summaries shown in a thread list buffer.
+Each element is a plist from `mail-app--thread-summaries'.")
+
+
+
+(defvar-local mail-app-thread-view nil
+  "Non-nil when this messages buffer shows a single thread.
+Holds the thread summary plist (see `mail-app--thread-summaries').
+A thread buffer is an ordinary `mail-app-messages-mode' buffer whose
+`mail-app-messages-data' is just the thread's messages, so every
+message-list command works in it; refresh re-fetches the mailbox and
+re-filters to this thread by RFC Message-ID.")
+
+
+
 (defun mail-app--compute-message-limit ()
   "Return how many messages to fetch based on the current window height.
 Uses `mail-app-message-limit' as the minimum."

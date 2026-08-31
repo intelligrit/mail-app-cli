@@ -27,8 +27,7 @@
     (evil-set-initial-state 'mail-app-mailboxes-mode 'normal)
     (evil-set-initial-state 'mail-app-messages-mode 'normal)
     (evil-set-initial-state 'mail-app-message-view-mode 'normal)
-    (evil-set-initial-state 'mail-app-thread-list-mode 'normal)
-    (evil-set-initial-state 'mail-app-thread-view-mode 'normal))
+    (evil-set-initial-state 'mail-app-thread-list-mode 'normal))
 
   ;; Add hooks to ensure Evil enters normal state immediately
   (add-hook 'mail-app-accounts-mode-hook 'evil-normal-state)
@@ -36,7 +35,6 @@
   (add-hook 'mail-app-messages-mode-hook 'evil-normal-state)
   (add-hook 'mail-app-message-view-mode-hook 'evil-normal-state)
   (add-hook 'mail-app-thread-list-mode-hook 'evil-normal-state)
-  (add-hook 'mail-app-thread-view-mode-hook 'evil-normal-state)
 
   ;; Use evil-local-set-key in mode hooks for highest-priority RET bindings.
   ;; evil-define-key on the mode map is sometimes overridden by evil's own
@@ -61,11 +59,7 @@
     (add-hook 'mail-app-thread-list-mode-hook
               (lambda ()
                 (evil-local-set-key 'normal (kbd "RET") 'mail-app-view-thread-at-point)
-                (evil-local-set-key 'motion (kbd "RET") 'mail-app-view-thread-at-point)))
-    (add-hook 'mail-app-thread-view-mode-hook
-              (lambda ()
-                (evil-local-set-key 'normal (kbd "RET") 'mail-app-view-message-at-point)
-                (evil-local-set-key 'motion (kbd "RET") 'mail-app-view-message-at-point))))
+                (evil-local-set-key 'motion (kbd "RET") 'mail-app-view-thread-at-point))))
 
   ;; Define evil keybindings
   (when (fboundp 'evil-define-key)
@@ -188,27 +182,12 @@
       "ZQ" 'quit-window
       "?" 'describe-mode)
 
-    (evil-define-key '(normal motion) mail-app-thread-view-mode-map
-      (kbd "RET") 'mail-app-view-message-at-point
-      "c" 'mail-app-compose
-      "g" nil
-      "gr" 'mail-app-refresh
-      "f" 'mail-app-flag-message-at-point
-      "d" 'mail-app-delete-message-at-point
-      "a" 'mail-app-archive-message-at-point
-      "t" 'mail-app-mark-message-at-point
-      "q" 'quit-window
-      "ZZ" 'quit-window
-      "ZQ" 'quit-window
-      "?" 'describe-mode)
-
     ;; Remap Evil's RET command to the appropriate mail-app action
     (define-key mail-app-accounts-mode-map [remap evil-ret] #'mail-app-view-mailboxes-at-point)
     (define-key mail-app-mailboxes-mode-map [remap evil-ret] #'mail-app-view-messages-at-point)
     (define-key mail-app-messages-mode-map [remap evil-ret] #'mail-app-view-message-at-point)
     (define-key mail-app-message-view-mode-map [remap evil-ret] #'mail-app-save-attachment-at-point)
-    (define-key mail-app-thread-list-mode-map [remap evil-ret] #'mail-app-view-thread-at-point)
-    (define-key mail-app-thread-view-mode-map [remap evil-ret] #'mail-app-view-message-at-point))
+    (define-key mail-app-thread-list-mode-map [remap evil-ret] #'mail-app-view-thread-at-point))
 
   ;; Force Evil to update keymaps once bindings are defined
   (when (fboundp 'evil-normalize-keymaps)

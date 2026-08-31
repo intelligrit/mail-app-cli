@@ -215,46 +215,6 @@ Falls back to `mail-app--insert-plain' otherwise."
     (forward-line 4)))
 
 
-(defun mail-app--format-thread-view (messages)
-  "Format MESSAGES (from one thread) as a tree view."
-  (let ((inhibit-read-only t))
-    (erase-buffer)
-    (insert (propertize "Thread View\n" 'face 'bold))
-    (insert "\n")
-    (insert (format "%-2s %-60s %-40s\n"
-                    "" "SUBJECT" "FROM"))
-    (insert (make-string 110 ?-) "\n")
-    (dolist (msg messages)
-      (let* ((id (plist-get msg :id))
-             (read (plist-get msg :read))
-             (indent (plist-get msg :indent))
-             (indent-str (if (and indent (> indent 0))
-                             (concat (make-string (* 2 indent) ?\s) "→ ")
-                           ""))
-             (subject (plist-get msg :subject))
-             (from (plist-get msg :from))
-             (unread-marker (if read " " "●"))
-             (subject-display (truncate-string-to-width
-                               subject (max 20 (- 58 (length indent-str)))
-                               nil nil "..."))
-             (line (format "%-2s %-60s %-40s\n"
-                           unread-marker
-                           (concat indent-str subject-display)
-                           (truncate-string-to-width from 40 nil nil "...")))
-             (speech-text (concat
-                          (if (and indent (> indent 0)) "Reply. " "")
-                          (if (not read) "Unread. " "")
-                          subject ". From " from "."))
-             (start (point)))
-        (insert line)
-        (put-text-property start (point) 'mail-app-message-data msg)
-        (put-text-property start (point) 'emacspeak-speak speech-text)
-        (when (not read)
-          (put-text-property start (point) 'face 'bold))))
-    (goto-char (point-min))
-    (forward-line 4)))
-
-
 (defun mail-app--format-messages (messages)
   "Format MESSAGES for display."
   ;; Initialize sort settings from defaults on first run
@@ -287,9 +247,10 @@ Falls back to `mail-app--insert-plain' otherwise."
          (page-limit (or mail-app-current-limit mail-app-message-limit))
          (count-indicator (format "  (%d shown)" loaded-count)))
     (erase-buffer)
-    (insert (propertize (format "%s / %s / Messages%s%s\n"
+    (insert (propertize (format "%s / %s / %s%s%s\n"
                                 (or mail-app-current-account "Search")
                                 (or mail-app-current-mailbox "All")
+                                (if mail-app-thread-view "Thread" "Messages")
                                 sort-indicator
                                 count-indicator)
                         'face 'bold))
