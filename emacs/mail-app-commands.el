@@ -603,6 +603,7 @@ Uses the faster unified junk mailbox from Mail.app."
                      "-l" (number-to-string limit)
                      "-o" "0"))
          (args (append args (mail-app--content-args mailbox)))
+         (args (append args '("--with-headers")))
          (args (if mail-app-show-only-unread
                    (append args '("-u"))
                  args))
