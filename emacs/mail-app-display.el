@@ -47,18 +47,32 @@ shr extensively, so links, headings, and emphasis are all spoken correctly."
          (shr-image-animate nil))
     (shr-insert-document dom)))
 
+(defun mail-app--scrub-text (text)
+  "Remove invisible junk characters from email TEXT.
+Strips object-replacement characters (U+FFFC — Mail.app's plain-text
+rendition leaves one per inline image, displayed as a boxed OBJ glyph),
+zero-width spaces and joiners used for address obfuscation (U+200B,
+U+2060, U+FEFF), and soft hyphens (U+00AD).  These all render as
+clutter and are read aloud by screen readers."
+  (if (stringp text)
+      (replace-regexp-in-string "[\ufffc\u200b\u2060\ufeff\u00ad]+" "" text)
+    text))
+
 (defun mail-app--insert-plain (text)
   "Insert plain-text email body TEXT with readability cleanup.
+- Scrubs invisible junk (image placeholders, zero-width characters)
 - Normalises CRLF to LF
-- Collapses runs of 3+ blank lines to 2
 - Strips trailing whitespace per line
+- Collapses runs of 3+ blank lines to 2
 - Marks quoted lines (starting with >) with `shadow' face and,
   when Emacspeak is present, a monotone personality so they are
   spoken in a clearly different voice."
-  ;; Normalise line endings and whitespace
+  ;; Scrub junk first: lines holding only image placeholders become
+  ;; blank, then whitespace-stripping and blank-collapsing swallow them.
+  (setq text (mail-app--scrub-text text))
   (setq text (replace-regexp-in-string "\r\n" "\n" text))
-  (setq text (replace-regexp-in-string "\n\n\n+" "\n\n" text))
   (setq text (replace-regexp-in-string "[ \t]+\n" "\n" text))
+  (setq text (replace-regexp-in-string "\n\n\n+" "\n\n" text))
   (setq text (string-trim-right text))
   (let ((start (point)))
     (insert text "\n")
@@ -288,7 +302,7 @@ Falls back to `mail-app--insert-plain' otherwise."
                                   subject ". From " from ". "
                                   (when (and content (not (string-empty-p content)))
                                     (format "Content, %s"
-                                            (truncate-string-to-width content 300 nil nil "..."))))))
+                                            (truncate-string-to-width (mail-app--scrub-text content) 300 nil nil "..."))))))
                    (start (point)))
               (insert line)
               (let ((line-end (1- (point))))
@@ -337,7 +351,7 @@ Falls back to `mail-app--insert-plain' otherwise."
                                 subject ". From " from ". "
                                 (when (and content (not (string-empty-p content)))
                                   (format "Content, %s"
-                                          (truncate-string-to-width content 300 nil nil "..."))))))
+                                          (truncate-string-to-width (mail-app--scrub-text content) 300 nil nil "..."))))))
                  (start (point)))
             (insert line)
             (let ((line-end (1- (point))))
