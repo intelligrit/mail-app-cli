@@ -160,12 +160,46 @@ Example:
         '((\"Skyward\" . \"--\\nRobert Melton\\nSkyward IT\")
           (\"Gmail\" . \"~/signatures/gmail.txt\")
           (\"Fastmail\" . my-fastmail-signature-function)))"
-  :type '(alist :key-type (string :tag "Account name")
+  :type '(alist :key-type (string :tag "Account name or email")
                 :value-type (choice
                              (string :tag "Signature text")
                              (file :tag "Signature file path")
                              (function :tag "Signature function")))
   :group 'mail-app)
+
+(defcustom mail-app-identities nil
+  "List of configured send identities.
+Each identity is a property list with the following keys:
+  :name        Display label for selection (string)
+  :email       Email address (string, required)
+  :full-name   Full name to appear in the From: header (string, optional)
+  :account     Mail.app account name to route the email through (string, optional)
+  :signature   Signature string, file path, or function (optional)
+
+Example:
+  (setq mail-app-identities
+        '((:name \"Work\"
+           :email \"rmelton@skywarditsolutions.com\"
+           :full-name \"Robert Melton\"
+           :account \"Skyward\"
+           :signature \"--\\nRobert Melton\\nSkyward IT Solutions\")
+          (:name \"Personal\"
+           :email \"robert@robertmelton.com\"
+           :full-name \"Robert Melton\"
+           :account \"rmelton@fastmail.com email\"
+           :signature \"--\\nRobert\")))"
+  :type '(repeat (plist :key-type symbol :value-type sexp))
+  :group 'mail-app)
+
+(defcustom mail-app-auto-discover-identities t
+  "Whether to automatically discover identities from Mail.app accounts and aliases.
+When non-nil, identities are automatically discovered from configured Mail.app
+accounts and their aliases. User-configured `mail-app-identities` take precedence."
+  :type 'boolean
+  :group 'mail-app)
+
+(defvar mail-app--discovered-identities nil
+  "Cached list of auto-discovered identities from Mail.app accounts.")
 
 
 
@@ -491,29 +525,168 @@ Returns the email address associated with the account, or the account name if no
           account-name))
     (error account-name)))
 
-
+(defun mail-app--resolve-signature (sig-config)
+  "Resolve SIG-CONFIG to a signature string, or nil.
+SIG-CONFIG can be a string, a file path (~/ or /), or a function."
+  (cond
+   ((functionp sig-config)
+    (condition-case nil (funcall sig-config) (error nil)))
+   ((and (stringp sig-config)
+         (or (string-prefix-p "~/" sig-config)
+             (string-prefix-p "/" sig-config)))
+    (condition-case nil
+        (with-temp-buffer
+          (insert-file-contents (expand-file-name sig-config))
+          (buffer-string))
+      (error nil)))
+   ((stringp sig-config)
+    sig-config)
+   (t nil)))
 
 (defun mail-app--get-signature (account-name)
   "Get the signature for ACCOUNT-NAME.
 Returns the signature text or nil if none is configured."
-  (when-let* ((sig-config (cdr (assoc account-name mail-app-signatures))))
-    (cond
-     ;; Function - call it
-     ((functionp sig-config)
-      (funcall sig-config))
-     ;; File path - read from file
-     ((and (stringp sig-config)
-           (or (string-prefix-p "~/" sig-config)
-               (string-prefix-p "/" sig-config)))
-      (condition-case nil
-          (with-temp-buffer
-            (insert-file-contents (expand-file-name sig-config))
-            (buffer-string))
-        (error nil)))
-     ;; Plain string - use as-is
-     ((stringp sig-config)
-      sig-config)
-     (t nil))))
+  (mail-app--resolve-signature (cdr (assoc account-name mail-app-signatures))))
+
+(defun mail-app-get-identity-signature (identity)
+  "Get the signature string for IDENTITY.
+Checks the identity's :signature property, then `mail-app-signatures`
+by email address, then by account name."
+  (when identity
+    (or (mail-app--resolve-signature (plist-get identity :signature))
+        (when-let* ((email (plist-get identity :email)))
+          (mail-app--resolve-signature (cdr (assoc email mail-app-signatures))))
+        (when-let* ((acc (plist-get identity :account)))
+          (mail-app--resolve-signature (cdr (assoc acc mail-app-signatures)))))))
+
+(defun mail-app-format-identity-from (identity)
+  "Format the From: header value for IDENTITY.
+Returns \"Full Name <email>\" or \"email\"."
+  (let* ((email (plist-get identity :email))
+         (full-name (plist-get identity :full-name)))
+    (if (and full-name (not (string-empty-p full-name)))
+        (if (string-match-p "[\",]" full-name)
+            (format "\"%s\" <%s>" (replace-regexp-in-string "\"" "\\\\\"" full-name) email)
+          (format "%s <%s>" full-name email))
+      email)))
+
+(defun mail-app-discover-identities (&optional force-refresh)
+  "Discover identities from Mail.app accounts and their configured aliases.
+If FORCE-REFRESH is non-nil, re-query the Mail.app CLI."
+  (when (or force-refresh (null mail-app--discovered-identities))
+    (let* ((cmd-args (if force-refresh
+                         '("accounts" "list" "--force-refresh")
+                       '("accounts" "list")))
+           (output (apply 'mail-app--run-command cmd-args))
+           (accounts (mail-app--parse-accounts-output output))
+           (discovered '()))
+      (dolist (acc accounts)
+        (when (plist-get acc :enabled)
+          (let* ((acc-name (plist-get acc :name))
+                 (full-name (plist-get acc :full-name))
+                 (primary-email (plist-get acc :email))
+                 (raw-addrs (plist-get acc :email-addresses))
+                 (addrs (or (and (listp raw-addrs) raw-addrs)
+                            (when primary-email (list primary-email)))))
+            (dolist (email addrs)
+              (when (and (stringp email) (not (string-empty-p email)))
+                (let* ((label (if (and full-name (not (string-empty-p full-name)))
+                                  (format "%s <%s> (%s)" full-name email acc-name)
+                                (format "%s (%s)" email acc-name))))
+                  (push (list :name label
+                              :email email
+                              :full-name full-name
+                              :account acc-name)
+                        discovered)))))))
+      (setq mail-app--discovered-identities (nreverse discovered))))
+  mail-app--discovered-identities)
+
+(defun mail-app-get-identities (&optional force-refresh)
+  "Return all available send identities.
+Combines user-configured `mail-app-identities` with auto-discovered identities
+if `mail-app-auto-discover-identities` is non-nil."
+  (let ((user-ids (or mail-app-identities '()))
+        (discovered (if mail-app-auto-discover-identities
+                        (mail-app-discover-identities force-refresh)
+                      nil)))
+    (if (null user-ids)
+        discovered
+      (let ((result (copy-sequence user-ids)))
+        (dolist (disc discovered)
+          (let* ((disc-email (plist-get disc :email))
+                 (disc-acc (plist-get disc :account))
+                 (exists (seq-find (lambda (u)
+                                     (and (string-equal-ignore-case (or (plist-get u :email) "")
+                                                                   (or disc-email ""))
+                                          (or (null (plist-get u :account))
+                                              (string= (plist-get u :account) disc-acc))))
+                                   user-ids)))
+            (unless exists
+              (setq result (append result (list disc))))))
+        result))))
+
+(defun mail-app--extract-email-address (str)
+  "Extract the pure email address from a recipient STR (e.g. \"Name <foo@bar.com>\")."
+  (when str
+    (if (string-match "<\\([^>]+\\)>" str)
+        (match-string 1 str)
+      (if (string-match "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]\\{2,\\}\\b" str)
+          (match-string 0 str)
+        (string-trim str)))))
+
+(defun mail-app--extract-all-emails (str)
+  "Extract all email addresses from STR."
+  (when str
+    (let ((emails '())
+          (start 0))
+      (while (string-match "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]\\{2,\\}\\b" str start)
+        (push (downcase (match-string 0 str)) emails)
+        (setq start (match-end 0)))
+      (nreverse emails))))
+
+(defun mail-app--find-identity-by-email (email &optional account-name)
+  "Find an identity matching EMAIL (case-insensitive) and optionally ACCOUNT-NAME."
+  (when email
+    (let* ((identities (mail-app-get-identities))
+           (clean-email (downcase (string-trim email))))
+      (or (and account-name
+               (seq-find (lambda (id)
+                           (and (string-equal-ignore-case (or (plist-get id :email) "") clean-email)
+                                (string= (or (plist-get id :account) "") account-name)))
+                         identities))
+          (seq-find (lambda (id)
+                      (string-equal-ignore-case (or (plist-get id :email) "") clean-email))
+                    identities)))))
+
+(defun mail-app-match-identity (&optional recipient-strings account-name)
+  "Find the best matching send identity.
+RECIPIENT-STRINGS can be a string or list of strings (e.g. To, Cc headers).
+ACCOUNT-NAME is a fallback account name.
+If no match is found, falls back to `mail-app-default-account` or the first identity."
+  (let* ((identities (mail-app-get-identities))
+         (recips-combined (if (listp recipient-strings)
+                              (string-join (delq nil recipient-strings) ", ")
+                            (or recipient-strings "")))
+         (extracted-emails (mail-app--extract-all-emails recips-combined))
+         (matched nil))
+    ;; 1. Check if any recipient email matches a known identity's email
+    (while (and extracted-emails (null matched))
+      (let ((candidate (pop extracted-emails)))
+        (setq matched (mail-app--find-identity-by-email candidate))))
+    ;; 2. Match by account-name if provided
+    (unless matched
+      (when account-name
+        (setq matched (seq-find (lambda (id)
+                                  (string= (or (plist-get id :account) "") account-name))
+                                identities))))
+    ;; 3. Match by mail-app-default-account
+    (unless matched
+      (when mail-app-default-account
+        (setq matched (seq-find (lambda (id)
+                                  (string= (or (plist-get id :account) "") mail-app-default-account))
+                                identities))))
+    ;; 4. Default to first identity
+    (or matched (car identities))))
 
 
 
@@ -677,11 +850,22 @@ Returns nil if OUTPUT is not parseable."
       (let* ((json-array (json-parse-string output :object-type 'alist :array-type 'list))
              (accounts '()))
         (dolist (acc json-array)
-          (push (list :name (alist-get 'Name acc)
-                      :email (alist-get 'EmailAddress acc)
-                      :username (alist-get 'UserName acc)
-                      :enabled (eq (alist-get 'Enabled acc) t))
-                accounts))
+          (let* ((name (or (alist-get 'Name acc) (alist-get 'name acc)))
+                 (full-name (or (alist-get 'FullName acc) (alist-get 'fullName acc)))
+                 (email (or (alist-get 'EmailAddress acc) (alist-get 'emailAddress acc)))
+                 (raw-addrs (or (alist-get 'EmailAddresses acc) (alist-get 'emailAddresses acc)))
+                 (email-addresses (if (listp raw-addrs)
+                                      (append raw-addrs nil)
+                                    (when email (list email))))
+                 (username (or (alist-get 'UserName acc) (alist-get 'userName acc)))
+                 (enabled (eq (or (alist-get 'Enabled acc) (alist-get 'enabled acc)) t)))
+            (push (list :name name
+                        :full-name full-name
+                        :email email
+                        :email-addresses email-addresses
+                        :username username
+                        :enabled enabled)
+                  accounts)))
         (nreverse accounts))
     (error
      (message "Failed to parse accounts JSON: %s\nOutput: %s" err output)

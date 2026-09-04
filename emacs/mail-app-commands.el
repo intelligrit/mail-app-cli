@@ -110,6 +110,7 @@ With optional FORCE-REFRESH, bypass cache and fetch fresh data."
     (mail-app--speak "Loading accounts" 'select-object)
     (let ((args (list "accounts" "list")))
       (when force-refresh
+        (setq mail-app--discovered-identities nil)
         (setq args (append args '("--force-refresh"))))
       (apply 'mail-app--run-command-async
              (lambda (output)
@@ -1756,26 +1757,17 @@ each message. When disabled, only subject and sender are read."
                                           "-m" mail-app-current-mailbox))
            (details (mail-app--parse-message-details output))
            (from (plist-get details :from))
+           (to (plist-get details :to))
+           (cc (plist-get details :cc))
            (subject (plist-get details :subject))
            (body (plist-get details :content))
            (reply-subject (if (string-prefix-p "Re: " subject)
                               subject
                             (concat "Re: " subject)))
-           (from-email (mail-app--get-account-email mail-app-current-account)))
+           (identity (mail-app-match-identity (list to cc) mail-app-current-account)))
       (compose-mail from reply-subject)
-      ;; Now we're in the message buffer - set message-options here
-      (setq-local message-options `((account . ,mail-app-current-account)))
-      ;; Override send function to use mail-app-cli
-      (setq-local message-send-mail-function 'mail-app--message-send-mail)
-      ;; Set From header based on account email
-      (message-goto-from)
-      (beginning-of-line)
-      (kill-line)
-      (insert (format "From: %s" from-email))
-      (message-goto-body)
-      ;; Insert signature if configured
-      (when-let* ((signature (mail-app--get-signature mail-app-current-account)))
-        (insert "\n" signature "\n"))
+      (when identity
+        (mail-app-apply-identity identity))
       ;; Insert quoted original message
       (when body
         (goto-char (point-max))
@@ -1802,22 +1794,22 @@ each message. When disabled, only subject and sender are read."
            (reply-subject (if (string-prefix-p "Re: " subject)
                               subject
                             (concat "Re: " subject)))
-           (all-recipients (string-join (delq nil (list from to cc)) ", "))
-           (from-email (mail-app--get-account-email mail-app-current-account)))
-      (compose-mail all-recipients reply-subject)
-      ;; Now we're in the message buffer - set message-options here
-      (setq-local message-options `((account . ,mail-app-current-account)))
-      ;; Override send function to use mail-app-cli
-      (setq-local message-send-mail-function 'mail-app--message-send-mail)
-      ;; Set From header based on account email
-      (message-goto-from)
-      (beginning-of-line)
-      (kill-line)
-      (insert (format "From: %s" from-email))
-      (message-goto-body)
-      ;; Insert signature if configured
-      (when-let* ((signature (mail-app--get-signature mail-app-current-account)))
-        (insert "\n" signature "\n"))
+           (identity (mail-app-match-identity (list to cc) mail-app-current-account))
+           ;; Exclude all known identity emails from recipient list to avoid self-reply
+           (my-emails (mapcar (lambda (id) (downcase (plist-get id :email)))
+                              (mail-app-get-identities)))
+           (raw-recipients (delq nil (list from to cc)))
+           (filtered-recipients '()))
+      (dolist (r-str raw-recipients)
+        (let ((parts (split-string r-str "," t "\\s-+")))
+          (dolist (part parts)
+            (let ((addr (downcase (mail-app--extract-email-address part))))
+              (unless (member addr my-emails)
+                (push (string-trim part) filtered-recipients))))))
+      (setq filtered-recipients (delete-dups (nreverse filtered-recipients)))
+      (compose-mail (string-join filtered-recipients ", ") reply-subject)
+      (when identity
+        (mail-app-apply-identity identity))
       ;; Insert quoted original message
       (when body
         (goto-char (point-max))
@@ -1844,23 +1836,15 @@ each message. When disabled, only subject and sender are read."
            (fwd-subject (if (string-prefix-p "Fwd: " subject)
                             subject
                           (concat "Fwd: " subject)))
-           (from-email (mail-app--get-account-email mail-app-current-account)))
+           (identity (mail-app-match-identity (list to) mail-app-current-account)))
       (compose-mail nil fwd-subject)
-      ;; Now we're in the message buffer - set message-options here
-      (setq-local message-options `((account . ,mail-app-current-account)))
-      ;; Override send function to use mail-app-cli
-      (setq-local message-send-mail-function 'mail-app--message-send-mail)
-      ;; Set From header based on account email
-      (message-goto-from)
-      (beginning-of-line)
-      (kill-line)
-      (insert (format "From: %s" from-email))
-      (message-goto-body)
-      ;; Insert signature if configured
-      (when-let* ((signature (mail-app--get-signature mail-app-current-account)))
-        (insert "\n" signature "\n\n"))
+      (when identity
+        (mail-app-apply-identity identity))
       ;; Insert forwarded message header and body
-      (insert "---------- Forwarded message ----------\n")
+      (message-goto-body)
+      (goto-char (point-max))
+      (unless (bolp) (insert "\n"))
+      (insert "\n---------- Forwarded message ----------\n")
       (insert (format "From: %s\n" from))
       (when date
         (insert (format "Date: %s\n" date)))
@@ -1874,6 +1858,109 @@ each message. When disabled, only subject and sender are read."
 
 
 
+(defvar-local mail-app--current-identity nil
+  "The active send identity in the current message buffer.")
+
+(defvar-local mail-app--current-signature nil
+  "The signature text currently inserted in the message buffer.")
+
+(defun mail-app-apply-identity (identity)
+  "Apply IDENTITY to the current message buffer.
+Updates From: header, message-options, active signature, and buffer-local state."
+  (unless identity
+    (user-error "No identity specified"))
+  (setq-local mail-app--current-identity identity)
+  (let ((acc (plist-get identity :account)))
+    (setq-local message-options `((account . ,acc) (identity . ,identity))))
+  (setq-local message-send-mail-function 'mail-app--message-send-mail)
+
+  ;; Update From: header
+  (save-excursion
+    (message-goto-from)
+    (beginning-of-line)
+    (delete-region (point) (line-end-position))
+    (insert (format "From: %s" (mail-app-format-identity-from identity))))
+
+  ;; Update signature
+  (let ((new-sig (mail-app-get-identity-signature identity)))
+    (save-excursion
+      (cond
+       ;; If we previously inserted a signature that still exists in buffer, replace it
+       ((and mail-app--current-signature
+             (not (string-empty-p mail-app--current-signature))
+             (save-excursion
+               (goto-char (point-min))
+               (search-forward mail-app--current-signature nil t)))
+        (save-excursion
+          (goto-char (point-min))
+          (when (search-forward mail-app--current-signature nil t)
+            (replace-match (or new-sig "") t t))))
+       ;; Otherwise, insert new signature if available
+       ((and new-sig (not (string-empty-p new-sig)))
+        (save-excursion
+          (goto-char (point-min))
+          (if (search-forward mail-header-separator nil t)
+              (forward-line 1)
+            (goto-char (point-max)))
+          ;; Check if there is a quoted section (e.g. in reply)
+          (if (re-search-forward "^>" nil t)
+              (progn
+                (beginning-of-line)
+                (insert "\n" new-sig "\n\n"))
+            (goto-char (point-max))
+            (unless (bolp) (insert "\n"))
+            (insert "\n" new-sig "\n"))))))
+    (setq-local mail-app--current-signature new-sig))
+
+  ;; Set local keybindings in the message buffer
+  (local-set-key (kbd "C-c C-x i") 'mail-app-select-identity)
+  (local-set-key (kbd "C-c C-x c") 'mail-app-cycle-identity)
+  (local-set-key (kbd "C-c i") 'mail-app-select-identity)
+
+  (let ((label (or (plist-get identity :name) (plist-get identity :email))))
+    (message "Identity: %s" label)
+    (mail-app--speak (format "Identity %s" label) 'select-object)))
+
+;;;###autoload
+(defun mail-app-select-identity (&optional identity)
+  "Select and apply a send identity for the current message."
+  (interactive)
+  (let* ((identities (mail-app-get-identities))
+         (id (or identity
+                 (if (null identities)
+                     (user-error "No identities available")
+                   (let* ((choices (mapcar (lambda (item)
+                                             (cons (or (plist-get item :name)
+                                                       (plist-get item :email))
+                                                   item))
+                                           identities))
+                          (selection (completing-read "Select identity: " choices nil t)))
+                     (cdr (assoc selection choices)))))))
+    (when id
+      (mail-app-apply-identity id))))
+
+;;;###autoload
+(defun mail-app-cycle-identity ()
+  "Cycle to the next available send identity for the current message."
+  (interactive)
+  (let* ((identities (mail-app-get-identities)))
+    (unless identities
+      (user-error "No identities available"))
+    (let* ((curr (or (bound-and-true-p mail-app--current-identity)
+                     (car identities)))
+           (pos (cl-position curr identities :test #'equal))
+           (next-pos (if (and pos (< (1+ pos) (length identities)))
+                         (1+ pos)
+                       0))
+           (next-id (nth next-pos identities)))
+      (mail-app-apply-identity next-id))))
+
+;; Set default keybindings in message-mode
+(with-eval-after-load 'message
+  (define-key message-mode-map (kbd "C-c C-x i") 'mail-app-select-identity)
+  (define-key message-mode-map (kbd "C-c C-x c") 'mail-app-cycle-identity)
+  (define-key message-mode-map (kbd "C-c i") 'mail-app-select-identity))
+
 (defun mail-app-send-message ()
   "Send the current message using mail-app-cli."
   (interactive)
@@ -1884,19 +1971,18 @@ each message. When disabled, only subject and sender are read."
            (bcc (mail-fetch-field "Bcc"))
            (subject (mail-fetch-field "Subject"))
            (from (mail-fetch-field "From"))
-           ;; Extract account from message-options or From header
-           (account (or (when (boundp 'message-options)
+           ;; Extract account from active identity or message-options or From header
+           (account (or (when (bound-and-true-p mail-app--current-identity)
+                          (plist-get mail-app--current-identity :account))
+                        (when (boundp 'message-options)
                           (cdr (assq 'account message-options)))
-                       (when from
-                         ;; Try to match From email to account
-                         (let ((email (if (string-match "<\\(.+\\)>" from)
-                                          (match-string 1 from)
-                                        from)))
-                           ;; Use the email as account identifier
-                           email))
-                       mail-app-current-account
-                       mail-app-default-account
-                       (read-string "Account: ")))
+                        (when from
+                          (let* ((email (mail-app--extract-email-address from))
+                                 (matched-id (mail-app--find-identity-by-email email)))
+                            (when matched-id
+                              (plist-get matched-id :account))))
+                        mail-app-current-account
+                        mail-app-default-account))
            ;; Parse MML to extract attachments and body
            (attachments '())
            (body-start (save-excursion
@@ -1934,7 +2020,7 @@ each message. When disabled, only subject and sender are read."
                   (while (re-search-forward "<#part[^>]+disposition=attachment[^>]*>.*?<#/part>" nil t)
                     (replace-match ""))
                   (goto-char (point-min))
-                  (while (re-search-forward "<#/?\(multipart\|part\)[^>]*>" nil t)
+                  (while (re-search-forward "<#/?\\(multipart\\|part\\)[^>]*>" nil t)
                     (replace-match ""))
                   (buffer-substring-no-properties (point-min) (point-max))))))
       (setq body-text (string-trim body-text))
@@ -1943,9 +2029,14 @@ each message. When disabled, only subject and sender are read."
         (error "No recipients specified"))
       (unless subject
         (error "No subject specified"))
-      (unless account
-        (error "No account specified"))
-      (let ((args (list "send" "-a" account "-s" subject "--body" body-text)))
+      (unless (or account from)
+        (error "No account or sender specified"))
+
+      (let ((args (list "send" "-s" subject "--body" body-text)))
+        (when account
+          (setq args (append args (list "-a" account))))
+        (when (and from (not (string-empty-p from)))
+          (setq args (append args (list "-f" from))))
         ;; Add To recipients
         (dolist (recipient (split-string to "," t "\\s-+"))
           (setq args (append args (list "-t" (string-trim recipient)))))
@@ -1961,9 +2052,10 @@ each message. When disabled, only subject and sender are read."
         (dolist (attachment (nreverse attachments))
           (setq args (append args (list "--attach" attachment))))
         (apply 'mail-app--run-command args)
-        (if (> (length attachments) 0)
-            (message "Message sent via %s with %d attachment(s)" account (length attachments))
-          (message "Message sent via %s" account))
+        (let ((target (or account from)))
+          (if (> (length attachments) 0)
+              (message "Message sent via %s with %d attachment(s)" target (length attachments))
+            (message "Message sent via %s" target)))
         ;; Do not kill buffer here, let message-mode handle it
         t))))
 
@@ -1979,31 +2071,30 @@ each message. When disabled, only subject and sender are read."
 (defun mail-app-compose ()
   "Compose a new email message."
   (interactive)
-  (let* ((accounts-output (mail-app--run-command "accounts" "list"))
-         (accounts (mail-app--parse-accounts-output accounts-output))
-         (account-names (mapcar (lambda (acc) (plist-get acc :name)) accounts))
-         (account (if (and mail-app-current-account (not current-prefix-arg))
-                      mail-app-current-account
-                    (completing-read "Account: " account-names nil t
-                                   (or mail-app-current-account mail-app-default-account))))
-         (from-email (mail-app--get-account-email account)))
+  (let* ((identities (mail-app-get-identities))
+         (identity (cond
+                    ;; Prefix arg: always prompt
+                    (current-prefix-arg
+                     (let* ((choices (mapcar (lambda (id)
+                                               (cons (or (plist-get id :name) (plist-get id :email)) id))
+                                             identities))
+                            (sel (completing-read "Identity: " choices nil t)))
+                       (cdr (assoc sel choices))))
+                    ;; If current account or default account matches an identity
+                    ((mail-app-match-identity nil (or mail-app-current-account mail-app-default-account)))
+                    ;; If multiple identities and no default/current, prompt
+                    ((> (length identities) 1)
+                     (let* ((choices (mapcar (lambda (id)
+                                               (cons (or (plist-get id :name) (plist-get id :email)) id))
+                                             identities))
+                            (sel (completing-read "Identity: " choices nil t)))
+                       (cdr (assoc sel choices))))
+                    ;; Fall back to first identity
+                    (t (car identities)))))
     ;; Open compose buffer
     (compose-mail)
-    ;; Now we're in the message buffer - set message-options here
-    (setq-local message-options `((account . ,account)))
-    ;; Override send function to use mail-app-cli
-    (setq-local message-send-mail-function 'mail-app--message-send-mail)
-    ;; Set From header based on account email
-    (message-goto-from)
-    (beginning-of-line)
-    (kill-line)
-    (insert (format "From: %s" from-email))
-    ;; Insert signature if configured
-    (when-let* ((signature (mail-app--get-signature account)))
-      (message-goto-body)
-      (goto-char (point-max))
-      (unless (bolp) (insert "\n"))
-      (insert "\n" signature))
+    (when identity
+      (mail-app-apply-identity identity))
     (message-goto-to)
     (message "Composing new message...")))
 

@@ -68,12 +68,14 @@ func (c *Client) runJXA(script string) (string, error) {
 
 // Account represents a Mail.app account
 type Account struct {
-	ID           string
-	Name         string
-	EmailAddress string
-	AccountType  string
-	UserName     string
-	Enabled      bool
+	ID             string
+	Name           string
+	FullName       string
+	EmailAddress   string
+	EmailAddresses []string
+	AccountType    string
+	UserName       string
+	Enabled        bool
 }
 
 // Mailbox represents a Mail.app mailbox
@@ -347,7 +349,7 @@ func (c *Client) DeleteMessage(accountName, mailboxName, messageID string) error
 }
 
 // SendMessage sends a new email message
-func (c *Client) SendMessage(accountName, subject, body string, to, cc, bcc, attachments []string) error {
+func (c *Client) SendMessage(accountName, from, subject, body string, to, cc, bcc, attachments []string) error {
 	// Escape all recipients
 	var toList, ccList, bccList string
 	var escapedTo, escapedCc, escapedBcc []string
@@ -381,6 +383,13 @@ func (c *Client) SendMessage(accountName, subject, body string, to, cc, bcc, att
 	}
 	attachCode := attachCodeBuilder.String()
 
+	var setSenderCode string
+	if from != "" {
+		setSenderCode = fmt.Sprintf(`set sender to "%s"`, escapeAppleScriptString(from))
+	} else {
+		setSenderCode = `set sender to (item 1 of (email addresses of targetAccount as list))`
+	}
+
 	// AppleScript block
 	script := fmt.Sprintf(`
 	tell application "Mail"
@@ -389,7 +398,7 @@ func (c *Client) SendMessage(accountName, subject, body string, to, cc, bcc, att
 			set newMessage to make new outgoing message with properties {subject:"%s", content:"%s", visible:false}
 
 			tell newMessage
-				set sender to (item 1 of (email addresses of targetAccount as list))
+				%s
 
 				repeat with addr in {"%s"}
 					make new to recipient at end of to recipients with properties {address:addr}
@@ -415,6 +424,7 @@ func (c *Client) SendMessage(accountName, subject, body string, to, cc, bcc, att
 		end try
 	end tell
 `, escapeAppleScriptString(accountName), escapeAppleScriptString(subject), escapeAppleScriptString(body),
+		setSenderCode,
 		toList,
 		ccList, ccList,
 		bccList, bccList,
@@ -474,10 +484,16 @@ const result = [];
 
 for (let i = 0; i < accounts.length; i++) {
 	const acc = accounts[i];
+	let addrs = [];
+	try { addrs = acc.emailAddresses() || []; } catch (e) {}
+	let fn = '';
+	try { fn = acc.fullName(); } catch (e) {}
 	result.push({
 		id: acc.id(),
 		name: acc.name(),
-		emailAddress: acc.emailAddresses().length > 0 ? acc.emailAddresses()[0] : '',
+		fullName: fn,
+		emailAddress: addrs.length > 0 ? addrs[0] : '',
+		emailAddresses: addrs,
 		userName: acc.userName(),
 		enabled: acc.enabled()
 	});

@@ -191,6 +191,9 @@ You can customize the package through `M-x customize-group RET mail-app RET`.
 Available customization options:
 
 - `mail-app-command`: Path to mail-app-cli executable
+- `mail-app-identities`: List of send identities with custom names, emails, full names, accounts, and signatures
+- `mail-app-auto-discover-identities`: Auto-discover identities from Mail.app accounts and aliases (default: t)
+- `mail-app-signatures`: Alist mapping account names or email addresses to signatures
 - `mail-app-default-account`: Default account to use (or nil to prompt)
 - `mail-app-message-limit`: Maximum number of messages to display
 - `mail-app-mark-as-read-on-view`: Auto-mark messages as read when viewing (default: t)
@@ -200,6 +203,35 @@ Available customization options:
 - `mail-app-default-accounts-sort-method`: Default sort for accounts list
 - `mail-app-default-mailboxes-sort-method`: Default sort for mailboxes list
 - `mail-app-default-messages-sort-method`: Default sort for messages list
+
+### Send Identities
+
+`mail-app` supports multiple send identities (accounts, aliases, and custom sender names):
+
+- **Zero-config auto-discovery**: Automatically discovers all accounts and configured email aliases from Mail.app.
+- **Auto-matching on reply**: When replying or forwarding, `mail-app` inspects the incoming message's `To` and `Cc` headers and automatically selects the matching identity and From address.
+- **Self-reply filtering**: Replying to all automatically omits your own identity email addresses from the recipient list.
+- **Interactive switching in compose buffers**:
+  - `C-c C-x i` or `C-c i`: Select an identity interactively via `completing-read`.
+  - `C-c C-x c`: Cycle to the next identity with a single keypress.
+  - Switches `From:` header, accounts, and updates signatures in-place without disturbing your draft.
+  - `C-u c`: Prompt for identity before composing.
+
+Example custom configuration in `~/.emacs.d/init.el`:
+
+```elisp
+(setq mail-app-identities
+      '((:name "Work"
+         :email "rmelton@skywarditsolutions.com"
+         :full-name "Robert Melton"
+         :account "Skyward"
+         :signature "-- \nRobert Melton\nSkyward IT Solutions")
+        (:name "Personal"
+         :email "robert@robertmelton.com"
+         :full-name "Robert Melton"
+         :account "rmelton@fastmail.com email"
+         :signature "-- \nRobert")))
+```
 
 ## Troubleshooting
 
