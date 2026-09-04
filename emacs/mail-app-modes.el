@@ -185,7 +185,8 @@ Key bindings:
 \\{mail-app-messages-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines t)
-  (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t))
+  (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t)
+  (add-hook 'post-command-hook 'mail-app--update-line-highlight nil t))
 
 
 
@@ -275,7 +276,8 @@ Key bindings:
 \\{mail-app-thread-list-mode-map}"
   (setq buffer-read-only t)
   (setq truncate-lines t)
-  (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t))
+  (add-hook 'post-command-hook 'mail-app--emacspeak-post-command nil t)
+  (add-hook 'post-command-hook 'mail-app--update-line-highlight nil t))
 
 
 

@@ -247,7 +247,8 @@ Falls back to `mail-app--insert-plain' otherwise."
         (put-text-property start (point) 'emacspeak-speak speech-text)
         (cond
          (marked
-          (put-text-property start (point) 'face 'highlight))
+          (put-text-property start (point) 'mail-app-marked t)
+          (put-text-property start (point) 'face (mail-app--get-marked-face)))
          (unread
           (put-text-property start (point) 'face 'bold)))))
     (goto-char (point-min))
@@ -337,7 +338,8 @@ Falls back to `mail-app--insert-plain' otherwise."
                   (put-text-property start (1+ start) 'auditory-icon nil))
                 (cond
                  (marked
-                  (put-text-property start line-end 'face 'highlight))
+                  (put-text-property start line-end 'mail-app-marked t)
+                  (put-text-property start line-end 'face (mail-app--get-marked-face)))
                  ((not read)
                   (put-text-property start line-end 'face 'bold)))))))
       ;; Regular message list: show SUBJECT and FROM only
@@ -386,7 +388,8 @@ Falls back to `mail-app--insert-plain' otherwise."
                 (put-text-property start (1+ start) 'auditory-icon nil))
               (cond
                (marked
-                (put-text-property start line-end 'face 'highlight))
+                (put-text-property start line-end 'mail-app-marked t)
+                (put-text-property start line-end 'face (mail-app--get-marked-face)))
                ((not read)
                 (put-text-property start line-end 'face 'bold))))))))
     ;; Footer: pagination status

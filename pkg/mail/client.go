@@ -549,6 +549,64 @@ func (c *Client) SyncAllAccounts() error {
 	return err
 }
 
+// OpenInMail opens and activates Mail.app, optionally focusing an account, mailbox, or message
+func (c *Client) OpenInMail(accountName, mailboxName, messageID string) error {
+	var script string
+
+	if messageID != "" && accountName != "" && mailboxName != "" {
+		script = fmt.Sprintf(`
+		tell application "Mail"
+			activate
+			try
+				set targetAccount to account "%s"
+				set targetMailbox to mailbox "%s" of targetAccount
+				set msgs to messages of targetMailbox
+				repeat with msg in msgs
+					if id of msg as string is "%s" then
+						set selected messages of message viewer 1 to {msg}
+						open msg
+						exit repeat
+					end if
+				end repeat
+			end try
+		end tell`,
+			escapeAppleScriptString(accountName),
+			escapeAppleScriptString(mailboxName),
+			escapeAppleScriptString(messageID),
+		)
+	} else if accountName != "" && mailboxName != "" {
+		script = fmt.Sprintf(`
+		tell application "Mail"
+			activate
+			try
+				set targetAccount to account "%s"
+				set targetMailbox to mailbox "%s" of targetAccount
+				set selected mailboxes of message viewer 1 to {targetMailbox}
+			end try
+		end tell`,
+			escapeAppleScriptString(accountName),
+			escapeAppleScriptString(mailboxName),
+		)
+	} else if accountName != "" {
+		script = fmt.Sprintf(`
+		tell application "Mail"
+			activate
+			try
+				set targetAccount to account "%s"
+				set targetMailbox to mailbox "INBOX" of targetAccount
+				set selected mailboxes of message viewer 1 to {targetMailbox}
+			end try
+		end tell`,
+			escapeAppleScriptString(accountName),
+		)
+	} else {
+		script = `tell application "Mail" to activate`
+	}
+
+	_, err := c.runAppleScript(script)
+	return err
+}
+
 // GetMailboxesJSON retrieves mailboxes as JSON using JXA. withCounts also
 // fills TotalCount, which costs a full enumeration per mailbox (~200ms on
 // large ones).

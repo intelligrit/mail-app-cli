@@ -29,66 +29,67 @@
    ;; In message view - open the specific message
    ((and (eq major-mode 'mail-app-message-view-mode) mail-app-current-message-id)
     (mail-app--speak "Opening message in Mail.app" 'open-object)
-    (let ((script (format "tell application \"Mail\"
-  activate
-  set targetAccount to account \"%s\"
-  set targetMailbox to mailbox \"%s\" of targetAccount
-  set msgs to messages of targetMailbox
-  repeat with msg in msgs
-    if id of msg as string is \"%s\" then
-      set selected messages of message viewer 1 to {msg}
-      open msg
-      exit repeat
-    end if
-  end repeat
-end tell"
-                          (replace-regexp-in-string "\"" "\\\\\"" mail-app-current-account)
-                          (replace-regexp-in-string "\"" "\\\\\"" mail-app-current-mailbox)
-                          mail-app-current-message-id)))
-      (call-process "osascript" nil nil nil "-e" script)
-      (message "Opened message in Mail.app")))
+    (let ((args (list "open" mail-app-current-message-id)))
+      (when mail-app-current-account
+        (setq args (append args (list "-a" mail-app-current-account))))
+      (when mail-app-current-mailbox
+        (setq args (append args (list "-m" mail-app-current-mailbox))))
+      (apply #'mail-app--run-command-async
+             (lambda (_) (message "Opened message in Mail.app"))
+             args)))
 
-   ;; In messages mode - open the mailbox
-   ((and (eq major-mode 'mail-app-messages-mode) mail-app-current-mailbox)
+   ;; In messages mode - open message at point or current mailbox
+   ((eq major-mode 'mail-app-messages-mode)
+    (let* ((msg (mail-app--get-message-at-point))
+           (id (and msg (plist-get msg :id)))
+           (acc (or (and msg (plist-get msg :account)) mail-app-current-account))
+           (mbox (or (and msg (plist-get msg :mailbox)) mail-app-current-mailbox))
+           (args (list "open")))
+      (when id
+        (setq args (append args (list id))))
+      (when acc
+        (setq args (append args (list "-a" acc))))
+      (when mbox
+        (setq args (append args (list "-m" mbox))))
+      (mail-app--speak (if id "Opening message in Mail.app" "Opening mailbox in Mail.app") 'open-object)
+      (apply #'mail-app--run-command-async
+             (lambda (_) (message (if id "Opened message in Mail.app" "Opened mailbox in Mail.app")))
+             args)))
+
+   ;; In thread list mode - open current mailbox
+   ((eq major-mode 'mail-app-thread-list-mode)
     (mail-app--speak "Opening mailbox in Mail.app" 'open-object)
-    (let ((script (format "tell application \"Mail\"
-  activate
-  set targetAccount to account \"%s\"
-  set targetMailbox to mailbox \"%s\" of targetAccount
-  set selected mailboxes of message viewer 1 to {targetMailbox}
-end tell"
-                          (replace-regexp-in-string "\"" "\\\\\"" mail-app-current-account)
-                          (replace-regexp-in-string "\"" "\\\\\"" mail-app-current-mailbox))))
-      (call-process "osascript" nil nil nil "-e" script)
-      (message "Opened mailbox in Mail.app")))
+    (let ((args (list "open")))
+      (when mail-app-current-account
+        (setq args (append args (list "-a" mail-app-current-account))))
+      (when mail-app-current-mailbox
+        (setq args (append args (list "-m" mail-app-current-mailbox))))
+      (apply #'mail-app--run-command-async
+             (lambda (_) (message "Opened mailbox in Mail.app"))
+             args)))
 
-   ;; In mailboxes mode - open mailbox at point or just the account
+   ;; In mailboxes mode - open mailbox at point or just activate Mail.app
    ((eq major-mode 'mail-app-mailboxes-mode)
     (let ((mailbox (mail-app--get-mailbox-at-point)))
       (if mailbox
           (let ((account (plist-get mailbox :account))
                 (name (plist-get mailbox :name)))
             (mail-app--speak "Opening mailbox in Mail.app" 'open-object)
-            (let ((script (format "tell application \"Mail\"
-  activate
-  set targetAccount to account \"%s\"
-  set targetMailbox to mailbox \"%s\" of targetAccount
-  set selected mailboxes of message viewer 1 to {targetMailbox}
-end tell"
-                                  (replace-regexp-in-string "\"" "\\\\\"" account)
-                                  (replace-regexp-in-string "\"" "\\\\\"" name))))
-              (call-process "osascript" nil nil nil "-e" script)
-              (message "Opened mailbox in Mail.app")))
+            (mail-app--run-command-async
+             (lambda (_) (message "Opened mailbox in Mail.app"))
+             "open" "-a" account "-m" name))
         ;; No mailbox at point, just open Mail.app
         (mail-app--speak "Opening Mail.app" 'open-object)
-        (call-process "osascript" nil nil nil "-e" "tell application \"Mail\" to activate")
-        (message "Opened Mail.app"))))
+        (mail-app--run-command-async
+         (lambda (_) (message "Opened Mail.app"))
+         "open"))))
 
    ;; In accounts mode or anywhere else - just open Mail.app
    (t
     (mail-app--speak "Opening Mail.app" 'open-object)
-    (call-process "osascript" nil nil nil "-e" "tell application \"Mail\" to activate")
-    (message "Opened Mail.app"))))
+    (mail-app--run-command-async
+     (lambda (_) (message "Opened Mail.app"))
+     "open"))))
 
 
 
@@ -970,6 +971,7 @@ Marks the chosen messages read if any is unread; otherwise unread."
           (mail-app--format-thread-list mail-app-threads-data)
           (goto-char (point-min))
           (forward-line current-line))
+        (mail-app--update-line-highlight)
         (let* ((prefix (if was-marked "Unmarked. " "Marked. "))
                (speech (get-text-property (point) 'emacspeak-speak)))
           (mail-app--speak (if speech (concat prefix speech) (if was-marked "Unmarked" "Marked"))
@@ -993,6 +995,7 @@ Marks the chosen messages read if any is unread; otherwise unread."
           (mail-app--format-thread-list mail-app-threads-data)
           (goto-char (point-min))
           (forward-line (max 0 (- current-line 2))))
+        (mail-app--update-line-highlight)
         (let* ((prefix (if was-marked "Unmarked. " "Marked. "))
                (speech (get-text-property (point) 'emacspeak-speak)))
           (mail-app--speak (if speech (concat prefix speech) (if was-marked "Unmarked" "Marked"))
@@ -2116,6 +2119,7 @@ Updates From: header, message-options, active signature, and buffer-local state.
         ;; Return to the next line
         (goto-char (point-min))
         (forward-line current-line))
+      (mail-app--update-line-highlight)
       (let* ((prefix (if was-marked "Unmarked. " "Marked. "))
              (speech (get-text-property (point) 'emacspeak-speak)))
         (mail-app--speak (if speech (concat prefix speech) (if was-marked "Unmarked" "Marked"))
@@ -2139,6 +2143,7 @@ Updates From: header, message-options, active signature, and buffer-local state.
         ;; Return to the previous line
         (goto-char (point-min))
         (forward-line (max 0 (- current-line 2))))
+      (mail-app--update-line-highlight)
       (let* ((prefix (if was-marked "Unmarked. " "Marked. "))
              (speech (get-text-property (point) 'emacspeak-speak)))
         (mail-app--speak (if speech (concat prefix speech) (if was-marked "Unmarked" "Marked"))
@@ -2150,6 +2155,8 @@ Updates From: header, message-options, active signature, and buffer-local state.
   "Unmark all marked messages."
   (interactive)
   (setq mail-app-marked-messages nil)
+  (when (overlayp mail-app--hl-line-contrast-overlay)
+    (delete-overlay mail-app--hl-line-contrast-overlay))
   (message "All unmarked")
   (mail-app-refresh))
 

@@ -28,7 +28,7 @@
 
 
 
-(defconst mail-app-required-cli-version "1.2.0"
+(defconst mail-app-required-cli-version "1.3.0"
   "Minimum mail-app-cli version this package needs.
 Bump when the Elisp starts relying on new CLI behaviour.")
 
@@ -418,6 +418,91 @@ Options:
 
 (defvar-local mail-app-marked-messages nil
   "List of marked message IDs for bulk operations.")
+
+(defface mail-app-marked-face
+  '((((class color) (background dark))
+     :background "#1a365d" :foreground "#f8fafc" :extend t)
+    (((class color) (background light))
+     :background "#dbeafe" :foreground "#1e293b" :extend t)
+    (t :inverse-video t))
+  "Face used for marked messages in mail-app message and thread lists."
+  :group 'mail-app)
+
+(defvar hl-line-mode)
+(defvar global-hl-line-mode)
+
+(defvar-local mail-app--hl-line-contrast-overlay nil
+  "Overlay to ensure text contrast on the active line when using dark line highlight.")
+
+(defun mail-app--color-luminance (color)
+  "Return relative luminance (0.0 to 1.0) for COLOR, or nil if invalid."
+  (when (and color (stringp color) (not (equal color "unspecified")))
+    (when-let* ((rgb (color-values color)))
+      (/ (+ (* 0.299 (nth 0 rgb))
+            (* 0.587 (nth 1 rgb))
+            (* 0.114 (nth 2 rgb)))
+         65535.0))))
+
+(defun mail-app--dark-color-p (color)
+  "Return non-nil if COLOR is a dark color (relative luminance < 0.5)."
+  (when-let* ((lum (mail-app--color-luminance color)))
+    (< lum 0.5)))
+
+(defun mail-app--hl-line-background ()
+  "Get the effective background color of `hl-line`."
+  (let ((bg (or (face-attribute 'hl-line :background nil t)
+                (face-background 'hl-line nil t))))
+    (if (and bg (not (eq bg 'unspecified)) (stringp bg))
+        bg
+      (when (eq (frame-parameter nil 'background-mode) 'dark)
+        "dark blue"))))
+
+(defun mail-app--hl-line-dark-p ()
+  "Return non-nil if `hl-line` (or current line highlight) uses a dark background."
+  (let ((bg (mail-app--hl-line-background)))
+    (if bg
+        (mail-app--dark-color-p bg)
+      (eq (frame-parameter nil 'background-mode) 'dark))))
+
+(defun mail-app--get-marked-face ()
+  "Return the face to use for marked messages, ensuring readable text with hl-line.
+If line highlight (`hl-line`) or the display uses a dark background,
+guarantees that marked text is NOT black and does not use a white background."
+  (if (mail-app--hl-line-dark-p)
+      (let ((fg (face-attribute 'mail-app-marked-face :foreground nil t))
+            (bg (face-attribute 'mail-app-marked-face :background nil t)))
+        (if (or (and fg (stringp fg) (mail-app--dark-color-p fg))
+                (and bg (stringp bg) (not (mail-app--dark-color-p bg))))
+            '(:background "#1a365d" :foreground "#f8fafc" :extend t)
+          'mail-app-marked-face))
+    'mail-app-marked-face))
+
+(defun mail-app--update-line-highlight ()
+  "Ensure text on the current line is readable when using a dark line highlight.
+If the current line is marked and line highlight uses a dark background,
+ensures the text foreground is bright (not black)."
+  (if (and (or (bound-and-true-p hl-line-mode)
+               (bound-and-true-p global-hl-line-mode))
+           (mail-app--hl-line-dark-p))
+      (let* ((bol (line-beginning-position))
+             (eol (line-end-position))
+             (is-marked (or (get-text-property bol 'mail-app-marked)
+                            (when-let* ((msg (get-text-property bol 'mail-app-message-data)))
+                              (member (plist-get msg :id) mail-app-marked-messages))
+                            (when-let* ((thr (get-text-property bol 'mail-app-thread-data)))
+                              (member (plist-get thr :thread-id) mail-app-marked-messages)))))
+        (if is-marked
+            (let ((hl-bg (mail-app--hl-line-background)))
+              (unless (overlayp mail-app--hl-line-contrast-overlay)
+                (setq mail-app--hl-line-contrast-overlay (make-overlay bol eol))
+                (overlay-put mail-app--hl-line-contrast-overlay 'priority 100))
+              (move-overlay mail-app--hl-line-contrast-overlay bol eol)
+              (overlay-put mail-app--hl-line-contrast-overlay 'face
+                           `(:foreground "#ffffff" :background ,hl-bg :extend t)))
+          (when (overlayp mail-app--hl-line-contrast-overlay)
+            (delete-overlay mail-app--hl-line-contrast-overlay))))
+    (when (overlayp mail-app--hl-line-contrast-overlay)
+      (delete-overlay mail-app--hl-line-contrast-overlay))))
 
 
 
