@@ -21,28 +21,26 @@ Emacs interface for the mail-app CLI tool, providing a full-featured interface t
 
 - Emacs 27.1 or later
 - macOS with Mail.app configured
-- [mail-app-cli](https://github.com/robertmeta/mail-app-cli) installed and in PATH
+- `mail-app-cli` built and in PATH (`make install` or `go install` from repo root)
 - Optional: Emacspeak for screen reader support
 - Optional: Evil mode for vim keybindings
 
 ## Installation
 
-1. Install mail-app-cli:
-```bash
-# From the mail-app-cli directory
-go install
-```
+### Direct load-path
 
-2. Clone this repository:
-```bash
-git clone https://github.com/robertmeta/mail-app-wrap.git
-cd mail-app-wrap
-```
+Add the `emacs` directory to your Emacs configuration:
 
-3. Add to your Emacs configuration:
 ```elisp
-(add-to-list 'load-path "/path/to/mail-app-wrap")
+(add-to-list 'load-path "/path/to/mail-app-cli/emacs")
 (require 'mail-app)
+```
+
+### With Straight / Elpaca
+
+```elisp
+(use-package mail-app
+  :straight (:type git :host github :repo "intelligrit/mail-app-cli" :files ("emacs/*.el")))
 ```
 
 ## Setup

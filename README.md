@@ -17,6 +17,7 @@ A command-line interface for controlling macOS Mail.app. Provides complete scrip
 - Send emails
 - Manage attachments
 - Fully scriptable - perfect for automation and building GUIs
+- **Emacs Frontend**: Full-featured interactive Emacs mail client included in [`emacs/`](emacs/)
 
 ## Installation
 
@@ -469,6 +470,26 @@ go build -o mail-app-cli
 # Test message listing
 ./mail-app-cli messages list -a "Your Account" -m "INBOX" --limit 5
 ```
+
+## Emacs Interface
+
+An interactive Emacs frontend for `mail-app-cli` is included in [`emacs/`](emacs/). It provides mailbox navigation, threaded message browsing, reading, searching, flagging, archiving, Evil mode bindings, and Emacspeak screen reader integration.
+
+To use it in your Emacs configuration:
+
+```elisp
+(add-to-list 'load-path "/path/to/mail-app-cli/emacs")
+(require 'mail-app)
+```
+
+Or with `straight.el` / `elpaca`:
+
+```elisp
+(use-package mail-app
+  :straight (:type git :host github :repo "intelligrit/mail-app-cli" :files ("emacs/*.el")))
+```
+
+See [`emacs/README.md`](emacs/README.md) for full configuration and keybinding documentation.
 
 ## Roadmap
 
