@@ -973,8 +973,7 @@ Optionally play audio ICON."
 (defun mail-app--emacspeak-post-command ()
   "Emacspeak post-command hook for mail-app modes."
   (when (and (featurep 'emacspeak)
-             (memq this-command '(next-line previous-line evil-next-line evil-previous-line
-                                  mail-app-toggle-mark-at-point mail-app-toggle-mark-backward)))
+             (memq this-command '(next-line previous-line evil-next-line evil-previous-line)))
     (mail-app--emacspeak-speak-line)))
 
 

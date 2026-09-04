@@ -959,18 +959,20 @@ Marks the chosen messages read if any is unread; otherwise unread."
          (tid (and thread (plist-get thread :thread-id))))
     (if (not tid)
         (message "No thread at point")
-      (let ((current-line (line-number-at-pos)))
-        (if (member tid mail-app-marked-messages)
-            (progn
-              (setq mail-app-marked-messages
-                    (delete tid mail-app-marked-messages))
-              (mail-app--speak "Unmarked" 'delete-object))
-          (push tid mail-app-marked-messages)
-          (mail-app--speak "Marked" 'mark-object))
+      (let ((current-line (line-number-at-pos))
+            (was-marked (member tid mail-app-marked-messages)))
+        (if was-marked
+            (setq mail-app-marked-messages
+                  (delete tid mail-app-marked-messages))
+          (push tid mail-app-marked-messages))
         (when mail-app-threads-data
           (mail-app--format-thread-list mail-app-threads-data)
           (goto-char (point-min))
-          (forward-line current-line))))))
+          (forward-line current-line))
+        (let* ((prefix (if was-marked "Unmarked. " "Marked. "))
+               (speech (get-text-property (point) 'emacspeak-speak)))
+          (mail-app--speak (if speech (concat prefix speech) (if was-marked "Unmarked" "Marked"))
+                           (if was-marked 'delete-object 'mark-object)))))))
 
 
 (defun mail-app-toggle-thread-mark-backward ()
@@ -980,18 +982,20 @@ Marks the chosen messages read if any is unread; otherwise unread."
          (tid (and thread (plist-get thread :thread-id))))
     (if (not tid)
         (message "No thread at point")
-      (let ((current-line (line-number-at-pos)))
-        (if (member tid mail-app-marked-messages)
-            (progn
-              (setq mail-app-marked-messages
-                    (delete tid mail-app-marked-messages))
-              (mail-app--speak "Unmarked" 'delete-object))
-          (push tid mail-app-marked-messages)
-          (mail-app--speak "Marked" 'mark-object))
+      (let ((current-line (line-number-at-pos))
+            (was-marked (member tid mail-app-marked-messages)))
+        (if was-marked
+            (setq mail-app-marked-messages
+                  (delete tid mail-app-marked-messages))
+          (push tid mail-app-marked-messages))
         (when mail-app-threads-data
           (mail-app--format-thread-list mail-app-threads-data)
           (goto-char (point-min))
-          (forward-line (max 0 (- current-line 2))))))))
+          (forward-line (max 0 (- current-line 2))))
+        (let* ((prefix (if was-marked "Unmarked. " "Marked. "))
+               (speech (get-text-property (point) 'emacspeak-speak)))
+          (mail-app--speak (if speech (concat prefix speech) (if was-marked "Unmarked" "Marked"))
+                           (if was-marked 'delete-object 'mark-object)))))))
 
 
 (defun mail-app--act-on-marked-threads (label verb-past confirm &rest args)
@@ -2010,20 +2014,21 @@ each message. When disabled, only subject and sender are read."
   (interactive)
   (when-let* ((message (mail-app--get-message-at-point))
               (id (plist-get message :id)))
-    (let ((current-line (line-number-at-pos)))
-      (if (member id mail-app-marked-messages)
-          (progn
-            (setq mail-app-marked-messages (delete id mail-app-marked-messages))
-            (mail-app--speak "Unmarked" 'delete-object))
-        (progn
-          (push id mail-app-marked-messages)
-          (mail-app--speak "Marked" 'mark-object)))
+    (let ((current-line (line-number-at-pos))
+          (was-marked (member id mail-app-marked-messages)))
+      (if was-marked
+          (setq mail-app-marked-messages (delete id mail-app-marked-messages))
+        (push id mail-app-marked-messages))
       ;; Re-format the buffer with updated marks
       (when mail-app-messages-data
         (mail-app--format-messages mail-app-messages-data)
         ;; Return to the next line
         (goto-char (point-min))
-        (forward-line current-line)))))
+        (forward-line current-line))
+      (let* ((prefix (if was-marked "Unmarked. " "Marked. "))
+             (speech (get-text-property (point) 'emacspeak-speak)))
+        (mail-app--speak (if speech (concat prefix speech) (if was-marked "Unmarked" "Marked"))
+                         (if was-marked 'delete-object 'mark-object))))))
 
 
 
@@ -2032,20 +2037,21 @@ each message. When disabled, only subject and sender are read."
   (interactive)
   (when-let* ((message (mail-app--get-message-at-point))
               (id (plist-get message :id)))
-    (let ((current-line (line-number-at-pos)))
-      (if (member id mail-app-marked-messages)
-          (progn
-            (setq mail-app-marked-messages (delete id mail-app-marked-messages))
-            (mail-app--speak "Unmarked" 'delete-object))
-        (progn
-          (push id mail-app-marked-messages)
-          (mail-app--speak "Marked" 'mark-object)))
+    (let ((current-line (line-number-at-pos))
+          (was-marked (member id mail-app-marked-messages)))
+      (if was-marked
+          (setq mail-app-marked-messages (delete id mail-app-marked-messages))
+        (push id mail-app-marked-messages))
       ;; Re-format the buffer with updated marks
       (when mail-app-messages-data
         (mail-app--format-messages mail-app-messages-data)
         ;; Return to the previous line
         (goto-char (point-min))
-        (forward-line (max 0 (- current-line 2)))))))
+        (forward-line (max 0 (- current-line 2))))
+      (let* ((prefix (if was-marked "Unmarked. " "Marked. "))
+             (speech (get-text-property (point) 'emacspeak-speak)))
+        (mail-app--speak (if speech (concat prefix speech) (if was-marked "Unmarked" "Marked"))
+                         (if was-marked 'delete-object 'mark-object))))))
 
 
 

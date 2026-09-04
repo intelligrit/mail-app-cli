@@ -39,8 +39,7 @@ Optionally play audio ICON."
 (defun mail-app--emacspeak-post-command ()
   "Emacspeak post-command hook for mail-app modes."
   (when (and (featurep 'emacspeak)
-             (memq this-command '(next-line previous-line evil-next-line evil-previous-line
-                                  mail-app-toggle-mark-at-point mail-app-toggle-mark-backward)))
+             (memq this-command '(next-line previous-line evil-next-line evil-previous-line)))
     (mail-app--emacspeak-speak-line)))
 
 
@@ -58,6 +57,7 @@ Falls back to ORIG-FN for non-mail-app buffers."
   (if (and (memq major-mode '(mail-app-accounts-mode
                               mail-app-mailboxes-mode
                               mail-app-messages-mode
+                              mail-app-thread-list-mode
                               mail-app-message-view-mode))
            (get-text-property (point) 'emacspeak-speak))
       (dtk-speak (get-text-property (point) 'emacspeak-speak))
