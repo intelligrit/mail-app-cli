@@ -147,12 +147,31 @@ Archive messages:
 mail-app-cli messages archive <message-id> [<message-id>...] -a "Exchange" -m "Inbox"
 ```
 
-> **Gmail limitation:** archiving is refused for Gmail accounts. Mail.app
-> offers no safe scriptable archive for Gmail — scripted moves out of INBOX
-> silently revert on the next sync, and the only workaround that sticks
-> (bouncing the message through Trash) can permanently delete mail. Archive
-> Gmail messages in Mail.app or Gmail itself, or use `messages delete` to
-> send them to Trash.
+Gmail archives use Mail.app’s native **Archive** toolbar button. Ordinary
+AppleScript moves to All Mail can leave Gmail’s Inbox label in place, so the CLI
+uses Accessibility to invoke the same action as Mail’s Archive button.
+
+Leave an existing Mail message-list window open in the background. The CLI
+reuses it without activating, hiding, minimizing, or creating windows. It
+temporarily disables preview, selects the requested messages as a group, and
+presses Archive **once per Gmail account**. Exact IDs are checked before the
+action; Inbox and All Mail are checked afterward for each message.
+The previous mailbox, message selection, and preview setting are restored.
+Collapsed conversations are expanded to select only the requested messages.
+If Mail selects the wrong row for an older conversation member, matching subject
+rows are checked against the exact message ID. Messages that still cannot be
+selected are reported individually; selectable messages continue as one batch.
+Leave Mail in the background while the operation runs. Bringing Mail forward
+stops further Archive actions. Progress stages stream to stderr while the final
+per-message JSON remains on stdout. A view-restoration warning does not turn a
+confirmed archive into a failed archive.
+An unlocked desktop and Accessibility access for the launching app (Emacs,
+Terminal, etc.) are required; macOS manages this under **System Settings →
+Privacy & Security → Accessibility**. Permission or verification failures are
+reported per message. There is no automatic fallback to deleting mail.
+
+Use `--gmail=skip` for unattended runs that should avoid UI automation.
+Gmail messages already in All Mail and outside Inbox are left in place.
 
 Move messages to another mailbox (the last argument is the target):
 
@@ -168,8 +187,8 @@ mail-app-cli messages delete <message-id> [<message-id>...] -a "Gmail" -m "INBOX
 
 Deleting a message that is already in Trash removes it permanently.
 
-All mutation commands accept multiple IDs and process them in a single
-Mail.app call.
+All mutation commands accept multiple IDs in a single CLI process. Gmail
+archives are grouped by account for the native Archive action.
 
 **Global IDs (no `--account`/`--mailbox`):** Mail.app message IDs are unique
 across all accounts, so mutations can also be run with just IDs — from any mix
@@ -183,19 +202,19 @@ mail-app-cli messages archive 399357 399364 401002
 ```json
 {
   "results": [
-    {"id": "399357", "account": "Gmail", "mailbox": "All Mail", "status": "skipped", "gmail": true,
-     "error": "Gmail accounts cannot be archived via Mail.app scripting"},
+    {"id": "399357", "account": "Gmail", "mailbox": "All Mail", "status": "ok", "gmail": true},
     {"id": "399364", "account": "Exchange", "mailbox": "Inbox", "status": "ok"},
     {"id": "401002", "status": "missing"}
   ],
-  "ok": 1, "missing": 1, "failed": 0, "skipped": 1
+  "ok": 2, "missing": 1, "failed": 0, "skipped": 0
 }
 ```
 
 Statuses are `ok`, `missing`, `failed` (with `error`) and `skipped`. For
-`archive`, `--gmail skip|delete|read` decides what happens to Gmail messages:
-leave them and report `skipped` (default), move them to Trash, or mark them
-read. `move` resolves the target mailbox inside each message's own account. Each ID is reported individually: a missing ID does not stop
+`archive`, `--gmail archive|skip|delete|read` decides what happens to Gmail
+messages: use native Archive (default), leave them and report `skipped`, move
+them to Trash, or mark them read. The policy works with both global and scoped
+IDs. Archive output always uses the JSON summary above. `move` resolves the target mailbox inside each message's own account. Each ID is reported individually: a missing ID does not stop
 the others, and the command exits non-zero listing the IDs that failed.
 
 > **Note:** when a message is moved (archive, move, delete) Mail.app assigns it
@@ -534,3 +553,7 @@ For issues, questions, or contributions, please open an issue on GitHub.
 
 - Built with Cobra CLI framework
 - Uses AppleScript and JXA for Mail.app integration
+
+To move messages to each account’s configured spam folder, use
+`mail-app-cli messages move <message-id> @junk`. The `@junk` selector resolves
+Mail.app’s configured folder even when it is named Spam or Junk Email.

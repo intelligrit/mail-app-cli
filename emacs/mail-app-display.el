@@ -209,6 +209,22 @@ Falls back to `mail-app--insert-plain' otherwise."
 
 (defun mail-app--format-thread-list (thread-summaries)
   "Format THREAD-SUMMARIES for display in thread list view."
+  ;; The root (and thus thread ID) may change after a partially successful
+  ;; archive. Match failed message IDs against the refreshed thread membership.
+  (when mail-app--archive-retry-ids
+    (setq mail-app-marked-messages
+          (seq-filter (lambda (id)
+                        (seq-some (lambda (summary)
+                                    (equal id (plist-get summary :thread-id)))
+                                  thread-summaries))
+                      mail-app-marked-messages))
+    (dolist (summary thread-summaries)
+      (when (seq-some (lambda (msg)
+                       (member (plist-get msg :id) mail-app--archive-retry-ids))
+                     (plist-get summary :all-messages))
+        (cl-pushnew (plist-get summary :thread-id) mail-app-marked-messages
+                    :test #'equal)))
+    (setq mail-app--archive-retry-ids nil))
   (let ((inhibit-read-only t))
     (erase-buffer)
     (insert (propertize (format "%s / %s / Threads\n"

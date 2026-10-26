@@ -13,7 +13,7 @@ Emacs interface for the mail-app CLI tool, providing a full-featured interface t
 - View full message details
 - Search across all emails
 - Flag, archive, delete, and mark messages
-- Full Emacspeak integration with custom speech and audio icons
+- Emacsvox and Emacspeak integration with custom speech and audio icons
 - Evil mode support with vim-like keybindings
 - Three-level navigation: mailboxes → messages → message view
 
@@ -22,7 +22,7 @@ Emacs interface for the mail-app CLI tool, providing a full-featured interface t
 - Emacs 27.1 or later
 - macOS with Mail.app configured
 - `mail-app-cli` built and in PATH (`make install` or `go install` from repo root)
-- Optional: Emacspeak for screen reader support
+- Optional: Emacsvox (preferred) or Emacspeak for screen reader support
 - Optional: Evil mode for vim keybindings
 
 ## Installation
@@ -130,9 +130,18 @@ Bulk actions on marked messages are one `mail-app-cli` call regardless of how
 many accounts the messages span, so marking fifty messages and pressing `x`
 costs one Mail.app round trip, not fifty.
 
-Archiving Gmail messages is not possible through Mail.app scripting; what
-happens to them is governed by `mail-app-gmail-archive-action` (`skip` and
-report by default, `delete` to Trash, or `read`).
+Gmail archiving uses Mail.app’s native Archive button once per account, selecting
+the requested messages as a group. Leave a Mail message-list window open behind
+Emacs. The CLI reuses that window without hiding, minimizing, or activating Mail,
+then restores the mailbox, selection, and preview setting. It verifies the exact
+selected IDs and the result in Inbox and All Mail.
+Additional archive requests are queued until the current batch finishes.
+Selection, archiving, and verification progress appears in the mode line and is
+spoken. `M-x mail-app-archive-status` opens the persistent progress/result log.
+Failed or skipped messages (and threads containing them) are marked for retry.
+Grant Accessibility access to the app launching the CLI if macOS requests it.
+`mail-app-gmail-archive-action` also supports `skip`, `delete` (Trash), and `read`.
+Failed or skipped archives are reported and leave the current message open.
 
 ### Message View Mode
 
@@ -143,7 +152,8 @@ report by default, `delete` to Trash, or `read`).
 | `v` | `mail-app-cycle-view` | Cycle view modes (plain → full → attachments) |
 | `f` | `mail-app-flag-current-message` | Flag current message |
 | `d` | `mail-app-delete-current-message` | Delete current message (with confirmation) |
-| `a` | `mail-app-archive-current-message` | Archive current message |
+| `a` | `mail-app-archive-current-message` | Archive and open the next entry |
+| `!` | `mail-app-junk-current-message` | Move to Junk and open the next entry |
 | `t` | `mail-app-mark-current-message` | Mark current message as unread |
 | `r` | `mail-app-reply-current-message` | Reply to current message |
 | `R` | `mail-app-reply-all-current-message` | Reply all to current message |
@@ -152,6 +162,14 @@ report by default, `delete` to Trash, or `read`).
 | `g` | `mail-app-refresh` | Refresh current view |
 | `q` | `quit-window` | Quit window |
 | `?` | `describe-mode` | Show help |
+
+After a successful archive or junk action, message view advances in the displayed
+order of the list it came from. From the main thread list, the next entry opens
+as a message if it has one message, or as a thread view if it has several.
+Within a thread, it advances to the next message in that thread. Using archive
+or junk directly on a row in the thread's message list advances the selection.
+At the end, message view returns to its source list without wrapping around.
+Failures and skipped actions keep the current message open.
 
 #### View Modes
 
@@ -173,9 +191,13 @@ When Evil mode is active, all modes start in `normal` state with additional vim-
 
 All standard keybindings from the tables above also work in Evil normal mode.
 
-## Emacspeak Support
+## Speech Support
 
-Full Emacspeak integration includes:
+Load Emacsvox before mail-app to use its `tts-speak` and `emacsvox-icon` APIs.
+Emacspeak remains supported when Emacsvox is absent. The integration also
+attaches its line reader when either speech backend is loaded later.
+
+Speech integration includes:
 
 - **Custom line speaking**: Each line speaks relevant information (mailbox name, unread count, message subject, sender, etc.)
 - **Audio icons**:
@@ -197,7 +219,7 @@ Available customization options:
 - `mail-app-default-account`: Default account to use (or nil to prompt)
 - `mail-app-message-limit`: Maximum number of messages to display
 - `mail-app-mark-as-read-on-view`: Auto-mark messages as read when viewing (default: t)
-- `mail-app-gmail-archive-action`: What archive does to Gmail messages: `skip` (default), `delete`, or `read`
+- `mail-app-gmail-archive-action`: What archive does to Gmail messages: `archive` (default), `skip`, `delete`, or `read`
 - `mail-app-no-content-mailbox-regexp`: Mailboxes (Trash, Deleted Items, Spam, Junk...) whose bodies are never fetched even with content reading on; the unified trash/junk views are always excluded
 - `mail-app-mailbox-counts`: Show total message counts in mailbox lists (default: nil; costs ~3s vs <1s)
 - `mail-app-default-accounts-sort-method`: Default sort for accounts list
@@ -265,13 +287,11 @@ If commands fail or timeout:
    that stalled. Restart Mail.app. Avoid content fetching on large or junk
    mailboxes.
 
-### Emacspeak not speaking
+### Speech is silent
 
-If you have Emacspeak installed but lines aren't being spoken:
-
-1. Ensure Emacspeak is loaded before mail-app.el
-2. Check `emacspeak-speak-mode` is enabled
-3. Verify DTK server is running
+1. Check that Emacsvox or Emacspeak is loaded.
+2. With Emacsvox, verify `tts-speaker-process` is running.
+3. With Emacspeak, check `emacspeak-speak-mode` and its speech server.
 
 ## License
 
@@ -280,3 +300,8 @@ MIT License - see LICENSE file for details.
 ## Author
 
 Robert Melton
+
+Junk mail: press `!` in a message list or open message to move that message
+to Junk. In the thread list, `!` asks whether to junk the root message or
+the entire thread (single-message threads skip the prompt). These bindings
+work with Evil enabled or disabled.

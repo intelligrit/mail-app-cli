@@ -76,13 +76,14 @@ If nil, you will be prompted to select one when needed."
 
 
 
-(defcustom mail-app-gmail-archive-action 'skip
+(defcustom mail-app-gmail-archive-action 'archive
   "What archiving does to messages in Gmail accounts.
-Mail.app offers no safe scriptable archive for Gmail (scripted moves out
-of INBOX revert on the next sync).  `skip' leaves them untouched and
-reports them; `delete' moves them to Trash (Gmail's own delete); `read'
-marks them read and leaves them in the inbox."
-  :type '(choice (const :tag "Skip and report" skip)
+`archive' uses Mail.app's native Archive command through Accessibility.
+Mail's existing background window is reused, then its prior mailbox,
+selection, and preview setting are restored.  `skip' leaves messages
+untouched; `delete' moves them to Trash; `read' only marks them read."
+  :type '(choice (const :tag "Archive using Mail.app" archive)
+                 (const :tag "Skip and report" skip)
                  (const :tag "Move to Trash" delete)
                  (const :tag "Mark read" read))
   :group 'mail-app)
@@ -366,6 +367,7 @@ Options:
     (define-key map (kbd "f") 'mail-app-flag-current-message)
     (define-key map (kbd "d") 'mail-app-delete-current-message)
     (define-key map (kbd "a") 'mail-app-archive-current-message)
+    (define-key map (kbd "!") 'mail-app-junk-current-message)
     (define-key map (kbd "t") 'mail-app-mark-current-message)
     (define-key map (kbd "s") 'mail-app-save-attachment-at-point)
     (define-key map (kbd "RET") 'mail-app-save-attachment-at-point)
@@ -528,6 +530,9 @@ Each element is a plist from `mail-app--thread-summaries'.")
   "The list buffer a message view was opened from.
 Used by the next/previous navigation commands in message view to walk
 the thread or the full message list without leaving the view.")
+
+(defvar-local mail-app--view-action-running nil
+  "Non-nil while an archive or junk action on this view is pending.")
 
 
 
@@ -793,36 +798,71 @@ matching `mail-app-no-content-mailbox-regexp'."
 (defun mail-app--run-command (&rest args)
   "Run mail-app-cli command with ARGS and return output."
   (with-temp-buffer
-    (let ((exit-code (apply 'call-process mail-app-command nil '(t t) nil args)))
+    (let* ((default-directory (if (file-directory-p default-directory)
+                                  default-directory
+                                (expand-file-name "~/")))
+           (exit-code (apply 'call-process mail-app-command nil '(t t) nil args)))
       (if (zerop exit-code)
           (buffer-string)
         (error "Mail app command failed: %s" (buffer-string))))))
 
 
 
+(defvar mail-app--progress-callback nil
+  "Dynamically bound callback for a command's streamed progress lines.")
+
 (defun mail-app--run-command-async (callback &rest args)
   "Run mail-app-cli command with ARGS asynchronously and call CALLBACK with output."
-  (let ((output-buffer (generate-new-buffer " *mail-app-async*")))
+  (let ((default-directory (if (file-directory-p default-directory)
+                               default-directory
+                             (expand-file-name "~/")))
+        (output-buffer (generate-new-buffer " *mail-app-async*"))
+        (progress-callback mail-app--progress-callback)
+        (pending ""))
     (make-process
      :name "mail-app-cli"
      :buffer output-buffer
      :command (cons mail-app-command args)
+     :filter
+     (lambda (_process chunk)
+       (setq pending (concat pending chunk))
+       (let (end)
+         (while (setq end (string-match "\n" pending))
+           (let ((line (substring pending 0 end)))
+             (setq pending (substring pending (1+ end)))
+             (if (string-prefix-p "mail-app-progress: " line)
+                 (when progress-callback
+                   (funcall progress-callback
+                            (substring line (length "mail-app-progress: "))))
+               (when (buffer-live-p output-buffer)
+                 (with-current-buffer output-buffer
+                   (goto-char (point-max))
+                   (insert line "\n"))))))))
      :sentinel
-     (lambda (process event)
+     (lambda (process _event)
        (condition-case sentinel-err
            (let ((buf (process-buffer process)))
              (when (and (buffer-live-p buf)
-                        (string-match-p "\\(?:finished\\|exited abnormally\\)" event))
+                        (memq (process-status process) '(exit signal failed)))
+               (with-current-buffer buf
+                 (goto-char (point-max))
+                 (insert pending))
                (let ((output (with-current-buffer buf
                                (buffer-substring-no-properties (point-min) (point-max)))))
                  (kill-buffer buf)
-                 (if (string-match-p "finished" event)
+                 (if (and (eq (process-status process) 'exit)
+                          (zerop (process-exit-status process)))
                      (condition-case err
                          (funcall callback output)
                        (error (message "Mail-app callback error: %S\nCommand: %S" err args)))
                    ;; Abnormal exit: log and call callback with error-prefixed output so
                    ;; bulk runners can count it as a failure and keep the chain moving.
-                   (message "Mail-app command failed: %s\nCommand: %S" output args)
+                   ;; Archive callbacks already give a concise summary and log
+                   ;; each failed ID. Avoid dumping the same JSON and errors
+                   ;; again into *Messages* for a structured partial failure.
+                   (unless (and (equal (seq-take args 2) '("messages" "archive"))
+                                (mail-app--parse-mutation-output output))
+                     (message "Mail-app command failed: %s\nCommand: %S" output args))
                    (condition-case err
                        (funcall callback (concat "error: " output))
                      (error (message "Mail-app callback error: %S\nCommand: %S" err args)))))))
@@ -882,40 +922,160 @@ nil if no JSON object is present."
                   :results (alist-get 'results obj)))))
     (error nil)))
 
+(defvar mail-app--archive-queue nil
+  "Pending archive requests as (CALLBACK . COMMAND-ARGS).")
+
+(defvar mail-app--archive-running nil
+  "Non-nil while an Emacs archive request is running.
+This is global because all mail buffers share Mail.app's selection.")
+
+(defvar mail-app--archive-status nil
+  "Current archive progress displayed in the mode line.")
+
+(defvar-local mail-app--archive-retry-ids nil
+  "Unsuccessful archive IDs awaiting thread-mark remapping after refresh.")
+
+(defun mail-app--archive-log (text)
+  "Append TEXT to the archive log without changing the selected buffer."
+  (with-current-buffer (get-buffer-create "*Mail.app Archive Log*")
+    (let ((inhibit-read-only t))
+      (goto-char (point-max))
+      (insert (format-time-string "%H:%M:%S ") text "\n"))
+    (unless (derived-mode-p 'special-mode) (special-mode))))
+
+(defun mail-app-archive-status ()
+  "Show progress and per-message results from recent archive requests."
+  (interactive)
+  (pop-to-buffer (get-buffer-create "*Mail.app Archive Log*"))
+  (goto-char (point-max)))
+
+(defun mail-app--archive-progress (stage)
+  "Display and speak an actual archive STAGE received from the CLI."
+  (setq mail-app--archive-status (concat " Mail: " stage))
+  (unless (listp global-mode-string)
+    (setq global-mode-string (list global-mode-string)))
+  (add-to-list 'global-mode-string 'mail-app--archive-status t)
+  (force-mode-line-update t)
+  (mail-app--archive-log stage)
+  (message "%s" stage)
+  (when (fboundp 'mail-app--speak)
+    ;; Speech failure must not strand the global archive queue.
+    (ignore-errors (mail-app--speak stage 'select-object))))
+
+(defun mail-app--archive-result (result ids buffer)
+  "Log RESULT and restore unsuccessful marks for IDS in BUFFER."
+  (mail-app--archive-log (mail-app--mutation-summary result "Archived"))
+  (dolist (row (plist-get result :results))
+    (when (or (not (equal (alist-get 'status row) "ok"))
+              (alist-get 'warning row))
+      (mail-app--archive-log
+       (format "%s / %s / %s: %s%s"
+               (or (alist-get 'account row) "unknown account")
+               (or (alist-get 'mailbox row) "unknown mailbox")
+               (alist-get 'id row)
+               (or (alist-get 'error row) (alist-get 'status row))
+               (if-let* ((warning (alist-get 'warning row)))
+                   (concat "; " warning) "")))))
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let* ((rows (plist-get result :results))
+             (failed (if rows
+                         (mapcar (lambda (row) (format "%s" (alist-get 'id row)))
+                                 (seq-remove (lambda (row) (equal (alist-get 'status row) "ok")) rows))
+                       (when (< (or (plist-get result :ok) 0) (length ids)) ids)))
+             (marks (if (derived-mode-p 'mail-app-thread-list-mode)
+                        (mapcar (lambda (thread) (plist-get thread :thread-id))
+                                (seq-filter
+                                 (lambda (thread)
+                                   (seq-some (lambda (msg) (member (plist-get msg :id) failed))
+                                             (plist-get thread :all-messages)))
+                                 mail-app-threads-data))
+                      (when (derived-mode-p 'mail-app-messages-mode) failed))))
+        (setq mail-app-marked-messages
+              (delete-dups (append mail-app-marked-messages marks)))
+        (when (derived-mode-p 'mail-app-thread-list-mode)
+          (setq mail-app--archive-retry-ids
+                (delete-dups (append mail-app--archive-retry-ids failed))))))))
+
+(defun mail-app--start-next-archive ()
+  "Start the next queued archive when the previous request has finished."
+  (when (and mail-app--archive-queue (not mail-app--archive-running))
+    (let* ((request (pop mail-app--archive-queue))
+           (callback (car request))
+           (done nil)
+           (finish (lambda (output)
+                     (unless done
+                       (setq done t)
+                       (setq mail-app--archive-status nil)
+                       (force-mode-line-update t)
+                       (unwind-protect
+                           (funcall callback output)
+                         (setq mail-app--archive-running nil)
+                         (mail-app--start-next-archive))))))
+      (setq mail-app--archive-running t)
+      (mail-app--archive-progress "Starting archive")
+      (condition-case err
+          (let ((mail-app--progress-callback #'mail-app--archive-progress))
+            (apply #'mail-app--run-command-async finish (cdr request)))
+        (error (if done
+                   (signal (car err) (cdr err))
+                 (funcall finish (format "error: %s" (error-message-string err)))))))))
+
 (defun mail-app--run-mutation-async (ids on-complete &rest args)
   "Run one global-ID mutation on IDS in a single mail-app-cli process.
 ARGS are the leading arguments, e.g. (\"messages\" \"archive\"); IDS are
 appended, followed by any strings in the tail of ARGS after the symbol
 `:after' (used for move's target and for flags).  Because Mail.app message
 IDs are unique across accounts, no account/mailbox context is needed and
-messages from any mix of accounts go in one round trip.
+messages from any mix of accounts go in one round trip.  Archive requests
+are queued so overlapping commands cannot compete for Mail's selection.
 ON-COMPLETE is called with the plist from `mail-app--parse-mutation-output',
 or with (:ok 0 :failed N :error STRING) if the output could not be parsed."
   (let* ((split (memq :after args))
          (head (if split (seq-take args (- (length args) (length split))) args))
          (tail (cdr split))
-         (n (length ids)))
-    (apply #'mail-app--run-command-async
-           (lambda (output)
-             (funcall on-complete
-                      (or (mail-app--parse-mutation-output output)
-                          (list :ok 0 :missing 0 :failed n :skipped 0
-                                :error (string-trim output)))))
-           (append head (mapcar (lambda (id) (format "%s" id)) ids) tail))))
+         (n (length ids))
+         (buffer (current-buffer))
+         (archive (equal head '("messages" "archive")))
+         (command (append head (mapcar (lambda (id) (format "%s" id)) ids) tail))
+         (callback (lambda (output)
+                     (let ((result (or (mail-app--parse-mutation-output output)
+                                       (list :ok 0 :missing 0 :failed n :skipped 0
+                                             :error (string-trim output)))))
+                       (when archive (mail-app--archive-result result ids buffer))
+                       (funcall on-complete result)))))
+    (if archive
+        (progn
+          (setq mail-app--archive-queue
+                (nconc mail-app--archive-queue (list (cons callback command))))
+          (when mail-app--archive-running
+            (let ((status (format "Archive queued: %d message%s" n (if (= n 1) "" "s"))))
+              (message "%s" status)
+              (mail-app--archive-log status)
+              (when (fboundp 'mail-app--speak)
+                (mail-app--speak status 'select-object))))
+          (mail-app--start-next-archive))
+      (apply #'mail-app--run-command-async callback command))))
 
 (defun mail-app--mutation-summary (result verb-past)
   "Build a human/speech summary string for mutation RESULT.
 VERB-PAST is e.g. \"Archived\"."
-  (let ((ok (plist-get result :ok))
-        (failed (+ (plist-get result :missing) (plist-get result :failed)))
-        (skipped (plist-get result :skipped))
-        (err (plist-get result :error)))
+  (let ((ok (or (plist-get result :ok) 0))
+        (failed (+ (or (plist-get result :missing) 0)
+                   (or (plist-get result :failed) 0)))
+        (skipped (or (plist-get result :skipped) 0))
+        (err (or (plist-get result :error)
+                 (seq-some (lambda (row) (alist-get 'error row))
+                           (plist-get result :results))))
+        (warning (seq-some (lambda (row) (alist-get 'warning row))
+                           (plist-get result :results))))
     (concat (format "%s %d message%s" verb-past ok (if (= ok 1) "" "s"))
             (if (> skipped 0)
-                (format ", %d Gmail skipped (archive them in Mail or Gmail)" skipped)
+                (format ", %d Gmail skipped by policy" skipped)
               "")
             (if (> failed 0) (format ", %d failed" failed) "")
-            (if err (format ": %s" err) ""))))
+            (if err (format ": %s" err) "")
+            (if warning (format "; warning: %s" warning) ""))))
 
 (defun mail-app--parse-mark-read-output (output)
   "Parse `mailboxes mark-read' JSON OUTPUT into total changed count.
@@ -1216,34 +1376,6 @@ Messages keep the :indent annotation the builder added."
      (message "Failed to parse attachments JSON: %s\nOutput: %s" err output)
      nil)))
 
-
-
-;;; Emacspeak integration
-
-(defun mail-app--speak (text &optional icon)
-  "Speak TEXT using Emacspeak.
-Optionally play audio ICON."
-  (when (featurep 'emacspeak)
-    (when icon
-      (emacspeak-icon icon))
-    (dtk-speak text)))
-
-
-
-(defun mail-app--emacspeak-speak-line ()
-  "Custom Emacspeak line speaking for mail-app."
-  (when (featurep 'emacspeak)
-    (let ((speech-text (get-text-property (point) 'emacspeak-speak)))
-      (when speech-text
-        (dtk-speak speech-text)))))
-
-
-
-(defun mail-app--emacspeak-post-command ()
-  "Emacspeak post-command hook for mail-app modes."
-  (when (and (featurep 'emacspeak)
-             (memq this-command '(next-line previous-line evil-next-line evil-previous-line)))
-    (mail-app--emacspeak-speak-line)))
 
 
  ; Skip title, blank, commands (2 lines), blank, header

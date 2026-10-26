@@ -10,7 +10,10 @@ import (
 )
 
 // Client provides an interface to interact with Mail.app via AppleScript
-type Client struct{}
+type Client struct {
+	// Progress receives human-readable archive stages while osascript runs.
+	Progress func(string)
+}
 
 // NewClient creates a new Mail.app client
 func NewClient() *Client {
@@ -56,7 +59,7 @@ func (c *Client) runJXA(script string) (string, error) {
 	var out bytes.Buffer
 	var stderr bytes.Buffer
 	cmd.Stdout = &out
-	cmd.Stderr = &stderr
+	cmd.Stderr = &jxaProgressWriter{output: &stderr, progress: c.Progress}
 
 	err := cmd.Run()
 	if err != nil {
@@ -141,6 +144,17 @@ function resolveMailbox(acc, name) {
 		return null;
 	}
 	return walk(acc);
+}
+// @junk selects Mail.app's configured junk mailbox for this account,
+// independent of provider naming or nesting. Other targets are literal names.
+function resolveMoveMailbox(mail, acc, target) {
+	if (target !== '@junk') return resolveMailbox(acc, target);
+	const boxes = mail.junkMailbox().mailboxes();
+	const accountID = acc.id();
+	for (let i = 0; i < boxes.length; i++) {
+		if (boxes[i].account().id() === accountID) return boxes[i];
+	}
+	return null;
 }
 // resolveMessage returns a message specifier by Mail's global message id,
 // or null if no such message exists. byId() is a direct object specifier
@@ -922,25 +936,8 @@ JSON.stringify(result);
 	return &message, nil
 }
 
-// ArchiveMessage moves a message to the provider's archive mailbox.
-//
-// Gmail accounts (detected by the presence of an "All Mail" mailbox) are
-// refused: Mail.app offers no safe, scriptable archive for Gmail. Every
-// mechanism was tested and fails:
-//   - Scripted moves out of INBOX (mailbox property or the move command)
-//     behave as label copies on Gmail's IMAP bridge — the message reappears
-//     in the inbox on the next sync.
-//   - Moving through Trash (move to Trash, then move back out to All Mail)
-//     does archive, but races Gmail's "expunged from Trash = permanently
-//     deleted" rule and was observed to permanently delete messages.
-//   - message.deletedStatus is read-only.
-//   - Driving Mail's own Archive command works reliably but requires UI
-//     automation that activates Mail and steals focus.
-//
-// Archiving Gmail from the CLI therefore needs the Gmail API, not Mail.app.
-//
-// Other providers (Exchange, Fastmail, ...) do real moves, so a plain move
-// to their "Archive" mailbox works.
+// ArchiveMessage archives one message. Gmail uses Mail's native Archive toolbar button
+// through Accessibility; other providers move to their Archive mailbox.
 func (c *Client) ArchiveMessage(accountName, mailboxName, messageID string) error {
 	res, err := c.ArchiveMessages(accountName, mailboxName, []string{messageID})
 	if err != nil {
@@ -1472,48 +1469,35 @@ func (c *Client) BulkDeleteMessages(requests []struct {
 	return nil
 }
 
-// BulkArchiveMessages archives multiple messages concurrently
+// BulkArchiveMessages batches by source mailbox and serializes native UI access.
 func (c *Client) BulkArchiveMessages(requests []struct {
 	AccountName string
 	MailboxName string
 	MessageID   string
 }) error {
-	if len(requests) == 0 {
-		return nil
-	}
-
-	// If only one request, no need for parallelization
-	if len(requests) == 1 {
-		req := requests[0]
-		return c.ArchiveMessage(req.AccountName, req.MailboxName, req.MessageID)
-	}
-
-	// Process archives in parallel
-	errors := make(chan error, len(requests))
-
-	// Launch goroutine for each archive operation
+	type source struct{ account, mailbox string }
+	groups := map[source][]string{}
+	var order []source
 	for _, req := range requests {
-		go func(r struct {
-			AccountName string
-			MailboxName string
-			MessageID   string
-		}) {
-			errors <- c.ArchiveMessage(r.AccountName, r.MailboxName, r.MessageID)
-		}(req)
+		key := source{req.AccountName, req.MailboxName}
+		if _, found := groups[key]; !found {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], req.MessageID)
 	}
-
-	// Collect results
-	var errorList []error
-	for i := 0; i < len(requests); i++ {
-		if err := <-errors; err != nil {
-			errorList = append(errorList, err)
+	var failures []string
+	for _, key := range order {
+		result, err := c.ArchiveMessages(key.account, key.mailbox, groups[key])
+		if err == nil {
+			err = result.Err()
+		}
+		if err != nil {
+			failures = append(failures, err.Error())
 		}
 	}
-
-	if len(errorList) > 0 {
-		return fmt.Errorf("failed to archive some messages: %v", errorList)
+	if len(failures) > 0 {
+		return fmt.Errorf("failed to archive some messages: %s", strings.Join(failures, "; "))
 	}
-
 	return nil
 }
 
@@ -1866,19 +1850,29 @@ func (c *Client) DeleteMessages(accountName, mailboxName string, messageIDs []st
 
 // MoveMessages moves several messages to targetMailbox in one round trip.
 func (c *Client) MoveMessages(accountName, sourceMailbox string, messageIDs []string, targetMailbox string) (*MutationResult, error) {
-	prelude := fmt.Sprintf(`const destMbox = resolveMailbox(acc, '%s');
+	prelude := fmt.Sprintf(`const destMbox = resolveMoveMailbox(mail, acc, '%s');
 	if (!destMbox) throw 'Destination mailbox not found';`, escapeJSString(targetMailbox))
 	return c.mutateMessages(accountName, sourceMailbox, messageIDs, prelude, "mail.move(msg, { to: destMbox });")
 }
 
-// ArchiveMessages archives several messages in one round trip. See
-// ArchiveMessage for why Gmail accounts are refused.
+// ArchiveMessages retains the scoped library API and archives Gmail natively.
 func (c *Client) ArchiveMessages(accountName, mailboxName string, messageIDs []string) (*MutationResult, error) {
-	prelude := `if (resolveMailbox(acc, 'All Mail')) throw 'Gmail accounts cannot be archived safely via Mail.app scripting. ' +
-		'Archive it in Mail.app or Gmail directly, or use "messages delete" to move it to Trash.';
-	const destMbox = resolveMailbox(acc, 'Archive');
-	if (!destMbox) throw 'Archive mailbox not found';`
-	return c.mutateMessages(accountName, mailboxName, messageIDs, prelude, "mail.move(msg, { to: destMbox });")
+	summary, err := c.ArchiveMessagesWithPolicy(accountName, mailboxName, messageIDs, "archive")
+	if err != nil {
+		return nil, err
+	}
+	result := &MutationResult{Failed: map[string]string{}}
+	for _, r := range summary.Results {
+		switch r.Status {
+		case "ok":
+			result.Succeeded = append(result.Succeeded, r.ID)
+		case "missing":
+			result.Missing = append(result.Missing, r.ID)
+		default:
+			result.Failed[r.ID] = r.Error
+		}
+	}
+	return result, nil
 }
 
 // MailboxMarkResult reports one mailbox touched by a mark-read operation.
@@ -2019,6 +2013,7 @@ type GlobalResult struct {
 	Status  string `json:"status"`
 	Gmail   bool   `json:"gmail,omitempty"`
 	Error   string `json:"error,omitempty"`
+	Warning string `json:"warning,omitempty"`
 }
 
 // GlobalSummary aggregates GlobalResults.
@@ -2056,30 +2051,59 @@ func (s *GlobalSummary) Err() error {
 //
 // action: "read", "unread", "flag", "unflag", "delete", "move" (target is
 // the destination mailbox name within each message's own account) or
-// "archive". For archive, gmailPolicy decides what happens to messages in
-// Gmail accounts (which cannot be archived safely via scripting, see
-// ArchiveMessage): "skip" (default), "delete" (move to Trash, Gmail's own
-// delete semantics) or "read" (just mark read).
+// "archive". Gmail policy is "archive" (native UI, default), "skip", "delete"
+// or "read". Legacy alternatives are used only when explicitly requested.
 func (c *Client) MutateMessagesGlobal(messageIDs []string, action, target, gmailPolicy string) (*GlobalSummary, error) {
+	return c.mutateMessagesGlobal(messageIDs, action, target, gmailPolicy, "", "")
+}
+
+func (c *Client) mutateMessagesGlobal(messageIDs []string, action, target, gmailPolicy, accountName, mailboxName string) (*GlobalSummary, error) {
 	idsJSON, _ := json.Marshal(messageIDs)
 	if gmailPolicy == "" {
-		gmailPolicy = "skip"
+		gmailPolicy = "archive"
 	}
-	script := fmt.Sprintf(`
+	if action == "archive" {
+		switch gmailPolicy {
+		case "archive", "skip", "delete", "read":
+		default:
+			return nil, fmt.Errorf("unknown Gmail archive policy: %s", gmailPolicy)
+		}
+		if gmailPolicy == "archive" {
+			unlock, err := lockNativeArchive()
+			if err != nil {
+				return nil, err
+			}
+			defer unlock()
+		}
+	}
+
+	script := `
 const mail = Application('Mail');
-`+jsResolveMailbox+`
+` + jsResolveMailbox + jsNativeArchive + fmt.Sprintf(`
 const wanted = %s;
 const action = '%s';
 const target = '%s';
 const gmailPolicy = '%s';
 const results = [];
+const pendingArchives = [];
+const scopeAccount = '%s';
+const scopeMailbox = '%s';
+let scopeIDs = null;
+if (scopeAccount || scopeMailbox) {
+    const acc = mail.accounts.byName(scopeAccount);
+    const box = resolveMailbox(acc, scopeMailbox);
+    if (!box) throw new Error('Source mailbox not found');
+    scopeIDs = box.messages.id().map(String);
+}
 // Any container works for byId; the unified inbox is always present.
 const container = mail.inbox().messages;
 const archiveBoxes = {};
 const isGmail = {};
-for (const id of wanted) {
+if (action === 'archive') archiveProgress('Locating ' + wanted.length + ' messages');
+for (const id of Array.from(new Set(wanted))) {
 	const r = { id: id, status: 'ok' };
 	try {
+		if (scopeIDs && scopeIDs.indexOf(id) < 0) { r.status = 'missing'; results.push(r); continue; }
 		const n = Number(id);
 		let mbox;
 		try { mbox = container.byId(n).mailbox(); r.mailbox = mbox.name(); } catch (e) { r.status = 'missing'; results.push(r); continue; }
@@ -2089,7 +2113,7 @@ for (const id of wanted) {
 		const acc = mbox.account();
 		const accName = acc.name();
 		r.account = accName;
-		if (isGmail[accName] === undefined) isGmail[accName] = !!resolveMailbox(acc, 'All Mail');
+		if (isGmail[accName] === undefined) isGmail[accName] = isGmailAccount(acc);
 		r.gmail = isGmail[accName];
 		switch (action) {
 		case 'read': msg.readStatus = true; break;
@@ -2098,16 +2122,17 @@ for (const id of wanted) {
 		case 'unflag': msg.flaggedStatus = false; break;
 		case 'delete': msg.delete(); break;
 		case 'move': {
-			const dest = resolveMailbox(acc, target);
+			const dest = resolveMoveMailbox(mail, acc, target);
 			if (!dest) throw 'Destination mailbox "' + target + '" not found in ' + accName;
 			mail.move(msg, { to: dest });
 			break;
 		}
 		case 'archive': {
 			if (r.gmail) {
-				if (gmailPolicy === 'delete') { msg.delete(); }
+				if (gmailPolicy === 'archive') { pendingArchives.push({result: r, msg: msg, acc: acc}); }
+				else if (gmailPolicy === 'delete') { msg.delete(); }
 				else if (gmailPolicy === 'read') { msg.readStatus = true; }
-				else { r.status = 'skipped'; r.error = 'Gmail accounts cannot be archived via Mail.app scripting'; }
+				else { r.status = 'skipped'; r.error = 'Skipped by --gmail=skip'; }
 				break;
 			}
 			if (archiveBoxes[accName] === undefined) archiveBoxes[accName] = resolveMailbox(acc, 'Archive');
@@ -2122,8 +2147,9 @@ for (const id of wanted) {
 	}
 	results.push(r);
 }
+nativeArchiveMessages(mail, pendingArchives);
 JSON.stringify(results);
-`, string(idsJSON), escapeJSString(action), escapeJSString(target), escapeJSString(gmailPolicy))
+`, string(idsJSON), escapeJSString(action), escapeJSString(target), escapeJSString(gmailPolicy), escapeJSString(accountName), escapeJSString(mailboxName))
 
 	output, err := c.runJXA(script)
 	if err != nil {

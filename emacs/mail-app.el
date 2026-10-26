@@ -28,7 +28,7 @@
 
 ;; Optional Integrations
 ;; These files contain internal checks (e.g. fboundp) to only activate 
-;; if the corresponding subsystem (Evil, Emacspeak) is present.
+;; if the corresponding subsystem (Evil, Emacsvox, Emacspeak) is present.
 (require 'mail-app-evil)
 (require 'mail-app-emacspeak)
 

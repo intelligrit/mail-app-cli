@@ -41,10 +41,13 @@ mail-app-wrap is an Emacs interface to mail-app-cli, providing a full-featured m
    - `mail-app-messages-mode`: View messages in a mailbox (Level 3)
    - `mail-app-message-view-mode`: View full message (Level 4)
 
-6. **Emacspeak Integration**
+6. **Speech Integration**
    - Post-command hook for custom line speaking
    - Advice on interactive commands for audio feedback
-   - Uses `emacspeak-icon` and `dtk-speak`
+   - Prefers Emacsvox (`emacsvox-icon`, `tts-speak`) and falls back to
+     Emacspeak (`emacspeak-icon`, `dtk-speak`)
+   - Speech helpers are defined only in `mail-app-emacspeak.el`; the legacy
+     helper and text-property names remain compatible with existing views
 
 7. **Evil Mode Integration**
    - Sets initial state to `normal` for all modes
@@ -194,7 +197,14 @@ When calling from Emacs, the arguments are passed as a list:
 - `mail-app--act-on-marked` (commands) is the shared driver for every
   `mail-app-*-marked` command.  Never loop `mail-app--run-command` per message.
 - Archive passes `--gmail=<mail-app-gmail-archive-action>`; Gmail messages
-  are skipped/deleted/marked-read per that option and reported.
+  use native Archive by default, or skip/delete/mark-read when explicitly chosen.
+  Results are reported; never announce success from unparsed command output.
+  Emacs queues archive requests globally across buffers so only one native
+  Archive operation owns Mail's selection at a time.
+  Gmail uses one Archive action per account in an existing background window;
+  never add hide/show cycles. CLI progress lines use `mail-app-progress: ` on
+  stderr and are stripped before JSON parsing. Keep per-message outcomes separate
+  from view-restoration warnings; retain unsuccessful marks for retry.
 - `mail-app-mark-mailbox-as-read` / `mail-app-mark-special-read` use
   `mailboxes mark-read` (JSON `[{account, mailbox, changed}]` on stdout).
 - Moved/archived/deleted messages get a new ID in the destination mailbox.
@@ -212,6 +222,14 @@ When calling from Emacs, the arguments are passed as a list:
 - `mail-app-delete-current-message` - Delete current message (with confirmation)
 - `mail-app-archive-current-message` - Archive current message
 - `mail-app-mark-current-message` - Mark current message as unread
+
+Archive and Junk share `mail-app--act-and-advance`. Capture subsequent source
+entries from their displayed text properties before starting the asynchronous
+mutation. On confirmed success, update the source data and display, then open the
+next message or multi-message thread. For a thread's message list, advance point
+within that thread. Preserve the current view on failure and do not redirect a
+window the user has already navigated away from. Pagination starts after the
+surviving cached messages, accounting for rows removed by these actions.
 
 ### Filters
 
@@ -254,7 +272,7 @@ When making changes, verify:
 - [ ] Search returns results
 - [ ] Unread filter works
 - [ ] Refresh updates display
-- [ ] Emacspeak speaks lines correctly (if installed)
+- [ ] Emacsvox or Emacspeak speaks lines correctly (if installed)
 - [ ] Evil keybindings work (if installed)
 - [ ] Error handling shows useful messages
 - [ ] Confirmation prompts work for destructive actions
@@ -271,7 +289,7 @@ Implemented functionality:
 - ✅ Contextual search (current account/mailbox) and global search
 - ✅ View cycling (plain text → full headers → attachments)
 - ✅ Async operations (non-blocking UI)
-- ✅ Full Emacspeak integration
+- ✅ Emacsvox and Emacspeak integration
 - ✅ Evil mode keybindings
 - ✅ Message threading support (thread grouping, sort-cycle toggle)
 

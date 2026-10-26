@@ -168,10 +168,24 @@ func reportMutation(res *mail.MutationResult, verb string) error {
 // the per-message JSON results to stdout and a summary to stderr, and
 // invalidates every mailbox cache touched.
 func runGlobal(ids []string, action, target, verb string) error {
-	summary, err := mail.NewClient().MutateMessagesGlobal(ids, action, target, msgGmailPolicy)
+	summary, err := newMutationClient(action).MutateMessagesGlobal(ids, action, target, msgGmailPolicy)
 	if err != nil {
 		return fmt.Errorf("failed to %s messages: %w", action, err)
 	}
+	return reportGlobal(summary, verb)
+}
+
+func newMutationClient(action string) *mail.Client {
+	client := mail.NewClient()
+	if action == "archive" {
+		client.Progress = func(stage string) {
+			fmt.Fprintln(os.Stderr, "mail-app-progress: "+stage)
+		}
+	}
+	return client
+}
+
+func reportGlobal(summary *mail.GlobalSummary, verb string) error {
 	touched := map[string]bool{}
 	for _, r := range summary.Results {
 		if r.Account != "" && !touched[r.Account] {
@@ -292,16 +306,19 @@ Deleting a message that is already in Trash removes it permanently.` + globalHel
 var messagesArchiveCmd = &cobra.Command{
 	Use:   "archive [message-id...]",
 	Short: "Archive messages",
-	Long: `Move one or more messages to the Archive mailbox. All IDs are processed in a single Mail.app call.
-Gmail accounts cannot be archived via Mail.app scripting (see README); --gmail
-chooses what happens to Gmail messages: skip (default, reported as skipped),
-delete (move to Trash) or read (mark as read and leave in place).` + globalHelp,
+	Long: `Archive one or more messages. Gmail uses Mail.app's native Archive command
+(default --gmail=archive), requiring an unlocked desktop and Accessibility access
+for the app launching this CLI. Leave a Mail message-list window open in the
+background. Each Gmail account is archived as one batch. Mail is never activated,
+hidden, minimized, or given a new window; its previous selection is restored.
+Other Gmail policies: skip, delete (Trash), or read (leave in place).
+Results are reported per message, including failures and skipped messages.` + globalHelp,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		switch msgGmailPolicy {
-		case "skip", "delete", "read":
+		case "archive", "skip", "delete", "read":
 		default:
-			return fmt.Errorf("--gmail must be skip, delete or read")
+			return fmt.Errorf("--gmail must be archive, skip, delete or read")
 		}
 		scoped, err := hasMailboxContext()
 		if err != nil {
@@ -310,20 +327,19 @@ delete (move to Trash) or read (mark as read and leave in place).` + globalHelp,
 		if !scoped {
 			return runGlobal(args, "archive", "", "archived")
 		}
-		res, err := mail.NewClient().ArchiveMessages(msgAccount, msgMailbox, args)
+		res, err := newMutationClient("archive").ArchiveMessagesWithPolicy(msgAccount, msgMailbox, args, msgGmailPolicy)
 		if err != nil {
 			return fmt.Errorf("failed to archive messages: %w", err)
 		}
-		invalidateMailboxCache(msgAccount, msgMailbox)
-		invalidateMailboxCache(msgAccount, "Archive")
-		return reportMutation(res, "archived")
+		return reportGlobal(res, "archived")
 	},
 }
 
 var messagesMoveCmd = &cobra.Command{
 	Use:   "move [message-id...] [target-mailbox]",
 	Short: "Move messages to another mailbox",
-	Long: `Move one or more messages to a different mailbox. The last argument is the target mailbox. All IDs are processed in a single Mail.app call.` + globalHelp + `
+	Long: `Move one or more messages to a different mailbox. Use @junk to select each
+account's configured junk/spam mailbox regardless of its name. The last argument is the target mailbox. All IDs are processed in a single Mail.app call.` + globalHelp + `
 When resolving globally, the target is looked up within each message's own account.`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -432,7 +448,7 @@ func init() {
 	// Common flags for all message commands
 	messagesCmd.PersistentFlags().StringVarP(&msgAccount, "account", "a", "", "Account name (required for list/show; optional for mutations)")
 	messagesCmd.PersistentFlags().StringVarP(&msgMailbox, "mailbox", "m", "", "Mailbox name (required for list/show; optional for mutations)")
-	messagesArchiveCmd.Flags().StringVar(&msgGmailPolicy, "gmail", "skip", "What to do with Gmail messages: skip, delete or read")
+	messagesArchiveCmd.Flags().StringVar(&msgGmailPolicy, "gmail", "archive", "What to do with Gmail messages: archive (native Mail UI), skip, delete or read")
 
 	// List-specific flags
 	messagesListCmd.Flags().IntVarP(&msgLimit, "limit", "l", 25, "Maximum number of messages to display")

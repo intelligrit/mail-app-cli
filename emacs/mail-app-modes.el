@@ -113,6 +113,7 @@
     (define-key map (kbd "f") 'mail-app-flag-current-message)
     (define-key map (kbd "d") 'mail-app-delete-current-message)
     (define-key map (kbd "a") 'mail-app-archive-current-message)
+    (define-key map (kbd "!") 'mail-app-junk-current-message)
     (define-key map (kbd "t") 'mail-app-mark-current-message)
     (define-key map (kbd "s") 'mail-app-save-attachment-at-point)
     (define-key map (kbd "RET") 'mail-app-save-attachment-at-point)
@@ -230,6 +231,7 @@ Key bindings:
     (define-key map (kbd "f") 'mail-app-flag-thread-at-point)
     (define-key map (kbd "d") 'mail-app-delete-thread-at-point)
     (define-key map (kbd "a") 'mail-app-archive-thread-at-point)
+    (define-key map (kbd "!") 'mail-app-junk-thread-at-point)
     (define-key map (kbd "t") 'mail-app-mark-thread-at-point)
     ;; Marking for bulk operations
     (define-key map (kbd "m") 'mail-app-toggle-thread-mark-at-point)

@@ -319,36 +319,48 @@ Gmail's All Mail is never touched.  One Mail.app round trip for everything."
 (defun mail-app-refresh ()
   "Refresh the current view (with cache refresh)."
   (interactive)
-  (mail-app--speak "Refreshing" 'select-object)
-  (cond
-   ((eq major-mode 'mail-app-accounts-mode)
-    (mail-app-list-accounts t))
-   ((eq major-mode 'mail-app-mailboxes-mode)
-    (if mail-app-current-account
-        (mail-app-list-mailboxes-for-account mail-app-current-account t)
-      (mail-app-list-mailboxes t)))
-   ((eq major-mode 'mail-app-messages-mode)
-    ;; Check if this is a thread buffer or a unified view
-    (cond
-     (mail-app-thread-view (mail-app--refresh-thread-view))
-     ((eq mail-app-unified-view 'inbox) (mail-app-list-inbox))
-     ((eq mail-app-unified-view 'unread) (mail-app-list-unread))
-     ((eq mail-app-unified-view 'sent) (mail-app-list-sent))
-     ((eq mail-app-unified-view 'drafts) (mail-app-list-drafts))
-     ((eq mail-app-unified-view 'flagged) (mail-app-list-flagged))
-     ((eq mail-app-unified-view 'trash) (mail-app-list-trash))
-     ((eq mail-app-unified-view 'junk) (mail-app-list-junk))
-     ;; Standard account/mailbox view
-     ((and mail-app-current-account mail-app-current-mailbox
-           (not (string-equal mail-app-current-account "All Accounts")))
-      (mail-app-list-messages mail-app-current-account mail-app-current-mailbox))
-     (t (message "Cannot refresh - no context"))))
-   ((eq major-mode 'mail-app-thread-list-mode)
-    (if (and mail-app-current-account mail-app-current-mailbox)
-        (mail-app-list-threads mail-app-current-account mail-app-current-mailbox)
-      (message "Cannot refresh - no context")))
-   (t
-    (message "Nothing to refresh"))))
+  (let ((buf (current-buffer))
+        (marks mail-app-marked-messages)
+        (retry-ids mail-app--archive-retry-ids))
+    (unwind-protect
+        (progn
+	  (mail-app--speak "Refreshing" 'select-object)
+	  (cond
+	   ((eq major-mode 'mail-app-accounts-mode)
+	    (mail-app-list-accounts t))
+	   ((eq major-mode 'mail-app-mailboxes-mode)
+	    (if mail-app-current-account
+		(mail-app-list-mailboxes-for-account mail-app-current-account t)
+	      (mail-app-list-mailboxes t)))
+	   ((eq major-mode 'mail-app-messages-mode)
+	    ;; Check if this is a thread buffer or a unified view
+	    (cond
+	     (mail-app-thread-view (mail-app--refresh-thread-view))
+	     ((eq mail-app-unified-view 'inbox) (mail-app-list-inbox))
+	     ((eq mail-app-unified-view 'unread) (mail-app-list-unread))
+	     ((eq mail-app-unified-view 'sent) (mail-app-list-sent))
+	     ((eq mail-app-unified-view 'drafts) (mail-app-list-drafts))
+	     ((eq mail-app-unified-view 'flagged) (mail-app-list-flagged))
+	     ((eq mail-app-unified-view 'trash) (mail-app-list-trash))
+	     ((eq mail-app-unified-view 'junk) (mail-app-list-junk))
+	     ;; Standard account/mailbox view
+	     ((and mail-app-current-account mail-app-current-mailbox
+		   (not (string-equal mail-app-current-account "All Accounts")))
+	      (mail-app-list-messages mail-app-current-account mail-app-current-mailbox))
+	     (t (message "Cannot refresh - no context"))))
+	   ((eq major-mode 'mail-app-thread-list-mode)
+	    (if (and mail-app-current-account mail-app-current-mailbox)
+		(mail-app-list-threads mail-app-current-account mail-app-current-mailbox)
+	      (message "Cannot refresh - no context")))
+	   (t
+	    (message "Nothing to refresh"))))
+      ;; List commands reinitialize their major mode before starting the async
+      ;; fetch. Restore marks before that fetch renders the refreshed data.
+      (when (buffer-live-p buf)
+        (with-current-buffer buf
+          (setq mail-app-marked-messages
+                (delete-dups (append mail-app-marked-messages marks)))
+          (setq mail-app--archive-retry-ids retry-ids))))))
 
 
 
@@ -687,7 +699,9 @@ Uses the faster unified junk mailbox from Mail.app."
   (when mail-app-thread-view
     (user-error "This buffer shows one thread; refresh with gr instead"))
   (let* ((page-size (or mail-app-current-limit mail-app-message-limit))
-         (new-offset (+ mail-app-current-offset page-size)))
+         ;; Successful archive/junk actions remove rows locally. Start after
+         ;; the surviving rows so the next fetch does not skip messages.
+         (new-offset (length mail-app-messages-data)))
     (mail-app--speak (format "Loading more messages" ) 'select-object)
     ;; Build args based on whether this is a unified view or standard view
     (let* ((cmd (cond
@@ -907,6 +921,18 @@ Gmail messages follow `mail-app-gmail-archive-action'."
                  "messages" "archive" :after (mail-app--gmail-archive-flag)))))))
 
 
+(defun mail-app-junk-thread-at-point ()
+  "Move the thread at point to Junk, asking message-or-thread scope first."
+  (interactive)
+  (let ((thread (get-text-property (point) 'mail-app-thread-data)))
+    (if (not thread)
+        (message "No thread at point")
+      (let ((msgs (mail-app--thread-action-scope thread "Junk")))
+        (when msgs
+          (mail-app--act-on-messages msgs "Marking as junk" "Junked" nil
+                                     "messages" "move" :after "@junk"))))))
+
+
 (defun mail-app-flag-thread-at-point ()
   "Toggle flag on the thread at point, asking message-or-thread scope first.
 Flags the chosen messages if any is unflagged; otherwise unflags them."
@@ -1062,7 +1088,7 @@ Gmail messages follow `mail-app-gmail-archive-action'."
   "Move every message of the marked threads to Junk."
   (interactive)
   (mail-app--act-on-marked-threads "Marking as junk" "Junked" nil
-                                   "messages" "move" :after "Junk"))
+                                   "messages" "move" :after "@junk"))
 
 
 (defun mail-app-move-marked-threads ()
@@ -1171,6 +1197,151 @@ window, and kills the view buffer being left."
   "Show the previous message in the originating message list."
   (interactive)
   (mail-app--view-nav 'list -1))
+
+
+(defun mail-app--displayed-entries ()
+  "Return message or thread entries in the current buffer's displayed order."
+  (let* ((threadp (eq major-mode 'mail-app-thread-list-mode))
+         (property (if threadp 'mail-app-thread-data 'mail-app-message-data))
+         entries)
+    (save-excursion
+      (goto-char (point-min))
+      (while (< (point) (point-max))
+        (when-let* ((data (get-text-property (point) property)))
+          (push (if threadp (list :thread data) (list :message data)) entries))
+        (goto-char (next-single-property-change (point) property nil (point-max)))))
+    (nreverse entries)))
+
+(defun mail-app--entry-message-ids (entry)
+  "Return the message IDs represented by list ENTRY."
+  (if-let* ((thread (plist-get entry :thread)))
+      (mapcar (lambda (msg) (plist-get msg :id)) (plist-get thread :all-messages))
+    (list (plist-get (plist-get entry :message) :id))))
+
+(defun mail-app--goto-entry (entry)
+  "Move point to ENTRY in the current list, or to its end if ENTRY is nil."
+  (goto-char (point-min))
+  (let ((ids (mail-app--entry-message-ids entry)) found)
+    (while (and (not found) (< (point) (point-max)))
+      (let ((msg (get-text-property (point) 'mail-app-message-data))
+            (thread (get-text-property (point) 'mail-app-thread-data)))
+        (if (or (and msg (member (plist-get msg :id) ids))
+                (and thread (seq-some (lambda (m) (member (plist-get m :id) ids))
+                                      (plist-get thread :all-messages))))
+            (setq found t)
+          (forward-line 1))))))
+
+(defun mail-app--remove-source-message (source id)
+  "Remove successfully handled ID from SOURCE's cached data and display."
+  (when (buffer-live-p source)
+    (with-current-buffer source
+      (let ((at-point (or (when-let* ((m (get-text-property (point) 'mail-app-message-data)))
+                            (list :message m))
+                          (when-let* ((thread (get-text-property (point) 'mail-app-thread-data)))
+                            (list :thread thread)))))
+        (cond
+         ((eq major-mode 'mail-app-thread-list-mode)
+          (let (summaries marks)
+            (dolist (old mail-app-threads-data)
+              (let ((remaining (seq-remove (lambda (m) (equal (plist-get m :id) id))
+                                           (plist-get old :all-messages))))
+                (when remaining
+                  (let ((updated (car (mail-app--thread-summaries (list remaining)))))
+                    (push updated summaries)
+                    (when (member (plist-get old :thread-id) mail-app-marked-messages)
+                      (push (plist-get updated :thread-id) marks))))))
+            (setq mail-app-threads-data (nreverse summaries)
+                  mail-app-marked-messages (nreverse marks))
+            (mail-app--format-thread-list mail-app-threads-data)))
+         ((eq major-mode 'mail-app-messages-mode)
+          (setq mail-app-messages-data
+                (seq-remove (lambda (m) (equal (plist-get m :id) id)) mail-app-messages-data)
+                mail-app-marked-messages (delete id mail-app-marked-messages))
+          (when mail-app-thread-view
+            (setq mail-app-thread-view
+                  (plist-put (copy-sequence mail-app-thread-view)
+                             :all-messages mail-app-messages-data)))
+          (mail-app--format-messages mail-app-messages-data)))
+        (mail-app--goto-entry at-point)))))
+
+(defun mail-app--open-source-entry (source entry)
+  "Open ENTRY from SOURCE, choosing a thread view for multiple messages."
+  (with-current-buffer source
+    (mail-app--goto-entry entry)
+    (let* ((thread (plist-get entry :thread))
+           (msgs (plist-get thread :all-messages))
+           (msg (or (plist-get entry :message) (car msgs))))
+      (if (> (length msgs) 1)
+          (mail-app-show-thread-view thread)
+        (mail-app-view-message (plist-get msg :id)
+                               (or (plist-get msg :account) mail-app-current-account)
+                               (or (plist-get msg :mailbox) mail-app-current-mailbox))))))
+
+(defun mail-app--act-and-advance (id label verb-past &rest args)
+  "Apply ARGS to ID, then advance in its source list after confirmed success.
+LABEL and VERB-PAST describe the action.  A full message view opens the next
+message or thread; a thread's message list moves point to its next message."
+  (when mail-app--view-action-running
+    (user-error "An action on this message is already in progress"))
+  (let* ((buf (current-buffer))
+         (win (selected-window))
+         (message-view (eq major-mode 'mail-app-message-view-mode))
+         (source (if message-view mail-app-view-source-buffer buf))
+         (following (when (buffer-live-p source)
+                      (with-current-buffer source
+                        (cdr (seq-drop-while
+                              (lambda (entry) (not (member id (mail-app--entry-message-ids entry))))
+                              (mail-app--displayed-entries)))))))
+    (mail-app--speak label 'select-object)
+    (setq mail-app--view-action-running t)
+    (condition-case err
+        (apply #'mail-app--run-mutation-async
+               (list id)
+               (lambda (result)
+                 (when (buffer-live-p buf)
+                   (with-current-buffer buf (setq mail-app--view-action-running nil)))
+                 (let* ((success (and (= (or (plist-get result :ok) 0) 1)
+                                      (zerop (or (plist-get result :failed) 0))
+                                      (zerop (or (plist-get result :missing) 0))
+                                      (zerop (or (plist-get result :skipped) 0))))
+                        (summary (mail-app--mutation-summary result verb-past))
+                        (still-here (and (buffer-live-p buf) (window-live-p win)
+                                         (eq (window-buffer win) buf)
+                                         (with-current-buffer buf
+                                           (equal id (if message-view mail-app-current-message-id
+                                                       (plist-get (mail-app--get-message-at-point) :id)))))))
+                   (message "%s" summary)
+                   (ignore-errors (mail-app--speak summary (if success 'task-done 'warn-user)))
+                   (when success
+                     (mail-app--remove-source-message source id)
+                     (when still-here
+                       (with-selected-window win
+                         (let ((next (when (buffer-live-p source)
+                                       (with-current-buffer source
+                                         (let ((current (mail-app--displayed-entries)))
+                                           (seq-some
+                                            (lambda (candidate)
+                                              (seq-find
+                                               (lambda (entry)
+                                                 (seq-intersection (mail-app--entry-message-ids candidate)
+                                                                   (mail-app--entry-message-ids entry) #'equal))
+                                               current)) following))))))
+                           (cond
+                            ((and next message-view)
+                             (mail-app--open-source-entry source next)
+                             (kill-buffer buf))
+                            (next
+                             (mail-app--goto-entry next)
+                             (mail-app--emacspeak-speak-line))
+                            ((and message-view (buffer-live-p source))
+                             (switch-to-buffer source)
+                             (kill-buffer buf)
+                             (mail-app--speak "No next entry; back to the list" 'task-done))
+                            (message-view (quit-window))
+                            (t (mail-app--speak "No next message in this thread" 'task-done)))))))))
+               args)
+      (error (setq mail-app--view-action-running nil)
+             (signal (car err) (cdr err))))))
 
 
 (defun mail-app-view-message (message-id account mailbox)
@@ -1528,26 +1699,18 @@ each message. When disabled, only subject and sender are read."
 
 
 (defun mail-app-archive-message-at-point ()
-  "Archive message at point."
+  "Archive message at point and report the actual result."
   (interactive)
   (let ((message (mail-app--get-message-at-point)))
     (if (not message)
         (message "No message at point")
-      (mail-app--speak "Archiving message" 'select-object)
-      (let* ((id (plist-get message :id))
-             (buf (current-buffer)))
-        (mail-app--run-command-async
-         (lambda (output)
-           (let* ((result (mail-app--parse-mutation-output output))
-                  (msg (if result (mail-app--mutation-summary result "Archived") "Archived")))
-             (message "%s" msg)
-             (when (buffer-live-p buf)
-               (with-current-buffer buf
-                 (mail-app--speak msg 'task-done)
-                 (mail-app-refresh)))))
-         "messages" "archive" id
-         (car (mail-app--gmail-archive-flag)))))))
-
+      (if mail-app-thread-view
+          (apply #'mail-app--act-and-advance (plist-get message :id)
+                 "Archiving message" "Archived" "messages" "archive"
+                 :after (mail-app--gmail-archive-flag))
+        (apply #'mail-app--act-on-messages (list message)
+               "Archiving" "Archived" nil "messages" "archive"
+               :after (mail-app--gmail-archive-flag))))))
 
 
 (defun mail-app-junk-message-at-point ()
@@ -1556,21 +1719,24 @@ each message. When disabled, only subject and sender are read."
   (let ((message (mail-app--get-message-at-point)))
     (if (not message)
         (message "No message at point")
-      (mail-app--speak "Marking as junk" 'select-object)
-      (let* ((id (plist-get message :id))
-             ;; Get account/mailbox from message data (for unified views)
-             (account (or (plist-get message :account) mail-app-current-account))
-             (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
-             (buf (current-buffer)))
-        (mail-app--run-command-async
-         (lambda (output)
-           (when (buffer-live-p buf)
-             (with-current-buffer buf
-               (mail-app--speak "Marked as junk" 'task-done)
-               (mail-app-refresh))))
-         "messages" "move" id "Junk"
-         "-a" account
-         "-m" mailbox)))))
+      (if mail-app-thread-view
+          (mail-app--act-and-advance (plist-get message :id) "Marking as junk" "Junked"
+                                     "messages" "move" :after "@junk")
+        (mail-app--speak "Marking as junk" 'select-object)
+	(let* ((id (plist-get message :id))
+               ;; Get account/mailbox from message data (for unified views)
+               (account (or (plist-get message :account) mail-app-current-account))
+               (mailbox (or (plist-get message :mailbox) mail-app-current-mailbox))
+               (buf (current-buffer)))
+          (mail-app--run-command-async
+           (lambda (output)
+             (when (buffer-live-p buf)
+               (with-current-buffer buf
+		 (mail-app--speak "Marked as junk" 'task-done)
+		 (mail-app-refresh))))
+           "messages" "move" id "@junk"
+           "-a" account
+           "-m" mailbox))))))
 
 
 
@@ -1687,21 +1853,22 @@ each message. When disabled, only subject and sender are read."
 
 
 (defun mail-app-archive-current-message ()
-  "Archive current message in message view."
+  "Archive the current message, then open the next source-list entry."
   (interactive)
   (when mail-app-current-message-id
-    (mail-app--speak "Archiving message" 'select-object)
-    (let ((win (selected-window)))
-      (mail-app--run-command-async
-       (lambda (output)
-         (message "Message archived")
-         (mail-app--speak "Archived" 'task-done)
-         (when (window-live-p win)
-           (with-selected-window win
-             (quit-window))))
-       "messages" "archive" mail-app-current-message-id
-       (car (mail-app--gmail-archive-flag))))))
+    (apply #'mail-app--act-and-advance mail-app-current-message-id
+           "Archiving message" "Archived" "messages" "archive"
+           :after (mail-app--gmail-archive-flag))))
 
+
+(defun mail-app-junk-current-message ()
+  "Move the current message to Junk, then open the next source-list entry."
+  (interactive)
+  (if (not mail-app-current-message-id)
+      (user-error "No message context available")
+    (mail-app--act-and-advance mail-app-current-message-id
+                              "Marking as junk" "Junked"
+                              "messages" "move" :after "@junk")))
 
 
 (defun mail-app-mark-current-message ()
@@ -2229,7 +2396,7 @@ Gmail messages follow `mail-app-gmail-archive-action'."
 (defun mail-app-junk-marked ()
   "Mark all marked messages as junk (move to Junk mailbox)."
   (interactive)
-  (mail-app--act-on-marked "Marking as junk" "Junked" nil "messages" "move" :after "Junk"))
+  (mail-app--act-on-marked "Marking as junk" "Junked" nil "messages" "move" :after "@junk"))
 
 
 

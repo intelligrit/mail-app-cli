@@ -161,6 +161,7 @@
       "f" 'mail-app-flag-current-message
       "d" 'mail-app-delete-current-message
       "a" 'mail-app-archive-current-message
+      "!" 'mail-app-junk-current-message
       "t" 'mail-app-mark-current-message
       "s" 'mail-app-save-attachment-at-point
       "g" nil
@@ -180,6 +181,7 @@
       "f" 'mail-app-flag-thread-at-point
       "d" 'mail-app-delete-thread-at-point
       "a" 'mail-app-archive-thread-at-point
+      "!" 'mail-app-junk-thread-at-point
       "t" 'mail-app-mark-thread-at-point
       ;; Marking for bulk operations
       "m" 'mail-app-toggle-thread-mark-at-point
